@@ -3,7 +3,11 @@ local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 
 -- Load the shared UI library
 local UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/soldiv86-rgb/DivineSouls/main/core/ui.lua"))()
@@ -16,6 +20,7 @@ local Settings = {
 	TweenDuration = 8.0,
 	MultiStepDelay = 0.8,
 	MultiStepSteps = 14,
+	AutoRefreshInterval = 3,
 	AutoFarmEnabled = false,
 	AutoFarmDelay = 1.2,
 	CollectHoldTime = 0.75,
@@ -67,6 +72,10 @@ loadSettings()
 -- GAME DATA
 -------------------------------------------------
 local Rarities = {"Ethereal", "Divine", "Mythic", "Legendary", "Epic", "Rare", "Common"}
+local RarityPriority = {
+	Ethereal = 7, Divine = 6, Mythic = 5, Legendary = 4,
+	Epic = 3, Rare = 2, Common = 1
+}
 local RarityColors = {
 	Ethereal  = Color3.fromRGB(175, 145, 255),
 	Divine    = Color3.fromRGB(155, 175,  55),
@@ -90,6 +99,20 @@ local currentSearch = ""
 local selectedEggs = Settings.SelectedEggs or {}
 local enabledRarities = Settings.EnabledRarities
 local eggButtons = {}
+local espObjects = {}
+local espEnabled = Settings.ESPEnabled
+local autoRefreshEnabled = Settings.AutoRefreshEnabled
+local goMethod = Settings.GoMethod
+local returnMethod = Settings.ReturnMethod
+
+-- Auto Farm state
+local autoFarmEnabled = Settings.AutoFarmEnabled
+local autoFarmRunning = false
+local farmStartTime = 0
+local eggsCollected = 0
+local lastCollectedRarity = "-"
+local currentAction = "Idle"
+local currentTarget = "-"
 
 -------------------------------------------------
 -- HELPERS
@@ -100,16 +123,365 @@ local function getHRP()
 	return character:FindFirstChild("HumanoidRootPart")
 end
 
-local function getBasePosition()
-	local baseplate = workspace:FindFirstChild("Plots")
+-- Dynamically finds the plot owned by this player, instead of a hardcoded path.
+-- Falls back to the fixed path if dynamic lookup doesn't find anything.
+local function getBase()
+	local plots = workspace:FindFirstChild("Plots")
+	if plots then
+		for _, plot in ipairs(plots:GetChildren()) do
+			local data = plot:FindFirstChild("Data")
+			if data then
+				local ownerValue = data:FindFirstChild("Owner")
+				if ownerValue and ownerValue:IsA("ObjectValue") then
+					local owner = ownerValue.Value
+					local isMine = (typeof(owner) == "string" and owner == player.Name)
+						or (typeof(owner) == "Instance" and owner == player)
+					if isMine then
+						return plot:FindFirstChild("Baseplate")
+							or plot:FindFirstChild("Base")
+							or plot:FindFirstChildWhichIsA("BasePart")
+							or plot:FindFirstChild("Spawn")
+							or plot.PrimaryPart
+					end
+				end
+			end
+		end
+	end
+
+	-- Fallback: fixed path, in case this game doesn't use per-player Data/Owner
+	local fallback = workspace:FindFirstChild("Plots")
 		and workspace.Plots:FindFirstChild("Plot")
 		and workspace.Plots.Plot:FindFirstChild("Baseplate")
-	if not baseplate then
-		warn("[RideAPet] Could not find workspace.Plots.Plot.Baseplate")
-		return nil
+	if not fallback then
+		warn("[RideAPet] Could not find a base (dynamic lookup and fallback both failed)")
 	end
-	return baseplate.Position + Vector3.new(0, 3, 0)
+	return fallback
 end
+
+local function teleportTo(target)
+	local hrp = getHRP()
+	if not hrp or not target then return end
+	hrp.CFrame = target:GetPivot() * CFrame.new(0, 5, 0)
+end
+
+local function tweenTo(target)
+	local hrp = getHRP()
+	if not hrp or not target then return end
+	TweenService:Create(hrp, TweenInfo.new(Settings.TweenDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		CFrame = target:GetPivot() * CFrame.new(0, 5, 0)
+	}):Play()
+	task.wait(Settings.TweenDuration)
+end
+
+local function multiTeleportTo(target)
+	local hrp = getHRP()
+	if not hrp or not target then return end
+
+	local start = hrp.Position
+	local goal = (target:GetPivot() * CFrame.new(0, 3, 0)).Position
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = { player.Character }
+
+	for i = 1, Settings.MultiStepSteps do
+		hrp = getHRP()
+		if not hrp then break end
+		local pos = start:Lerp(goal, i / Settings.MultiStepSteps)
+		local ray = workspace:Raycast(pos + Vector3.new(0, 5, 0), Vector3.new(0, -20, 0), rayParams)
+		if ray then
+			pos = Vector3.new(pos.X, ray.Position.Y + 3, pos.Z)
+		end
+		hrp.CFrame = CFrame.new(pos)
+		task.wait(Settings.MultiStepDelay)
+	end
+end
+
+local function goToTarget(target)
+	if goMethod == "MultiTeleport" then
+		multiTeleportTo(target)
+	else
+		tweenTo(target)
+	end
+end
+
+local function returnToBase()
+	local base = getBase()
+	if not base then return end
+	if returnMethod == "MultiTeleport" then
+		multiTeleportTo(base)
+	else
+		tweenTo(base)
+	end
+end
+
+-- Holds down the egg's collect prompt for Settings.CollectHoldTime seconds
+local function collectEgg(egg)
+	local prompt = egg:FindFirstChildWhichIsA("ProximityPrompt", true)
+	if prompt then
+		pcall(function()
+			prompt:InputHoldBegin()
+			task.wait(Settings.CollectHoldTime)
+			prompt:InputHoldEnd()
+		end)
+		return
+	end
+
+	-- Fallback if there's no ProximityPrompt: simulate holding E
+	pcall(function()
+		VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+		task.wait(Settings.CollectHoldTime)
+		VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+	end)
+end
+
+local function getEggRarity(eggName)
+	for rarity, names in pairs(RarityEggs) do
+		for _, name in ipairs(names) do
+			if name == eggName then return rarity end
+		end
+	end
+	return "Unknown"
+end
+
+-- Picks the highest-priority (rarest enabled) egg currently rendered
+local function getBestEgg()
+	local rendered = workspace:FindFirstChild("RenderedEggs")
+	if not rendered then return nil end
+
+	local bestEgg, bestPriority = nil, -1
+	for _, egg in ipairs(rendered:GetChildren()) do
+		local rarity = getEggRarity(egg.Name)
+		if enabledRarities[rarity] then
+			local prio = RarityPriority[rarity] or 0
+			if prio > bestPriority then
+				bestPriority = prio
+				bestEgg = egg
+			end
+		end
+	end
+	return bestEgg
+end
+
+-------------------------------------------------
+-- STATUS PANEL (floating overlay, shown while Auto Farm runs)
+-------------------------------------------------
+if playerGui:FindFirstChild("RideAPetStatus") then
+	playerGui.RideAPetStatus:Destroy()
+end
+
+local statusGui = Instance.new("ScreenGui")
+statusGui.Name = "RideAPetStatus"
+statusGui.ResetOnSpawn = false
+statusGui.Parent = playerGui
+
+local statusPanel = Instance.new("Frame")
+statusPanel.Size = UDim2.new(0, 290, 0, 0)
+statusPanel.AutomaticSize = Enum.AutomaticSize.Y
+statusPanel.Position = UDim2.new(1, -310, 0, 20)
+statusPanel.BackgroundColor3 = Color3.fromRGB(14, 14, 16)
+statusPanel.BorderSizePixel = 0
+statusPanel.Visible = false
+statusPanel.Parent = statusGui
+Instance.new("UICorner", statusPanel).CornerRadius = UDim.new(0, 10)
+
+local statusStroke = Instance.new("UIStroke", statusPanel)
+statusStroke.Color = Color3.fromRGB(255, 140, 40)
+statusStroke.Thickness = 1.2
+
+local statusPadding = Instance.new("UIPadding", statusPanel)
+statusPadding.PaddingTop = UDim.new(0, 12)
+statusPadding.PaddingBottom = UDim.new(0, 12)
+statusPadding.PaddingLeft = UDim.new(0, 14)
+statusPadding.PaddingRight = UDim.new(0, 14)
+
+local statusList = Instance.new("UIListLayout", statusPanel)
+statusList.Padding = UDim.new(0, 4)
+
+local function addStatusLabel(text, color, size)
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 0, size or 18)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = color or Color3.fromRGB(220, 180, 120)
+	label.Font = Enum.Font.Gotham
+	label.TextSize = 13
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.TextWrapped = true
+	label.Parent = statusPanel
+	return label
+end
+
+local titleLabel = addStatusLabel("Ride A Pet • Auto Farm", Color3.fromRGB(255, 160, 50), 20)
+titleLabel.Font = Enum.Font.GothamBold
+local statusLabel = addStatusLabel("Status: Idle", Color3.fromRGB(180, 180, 180))
+local actionLabel = addStatusLabel("Action: -")
+local targetLabel = addStatusLabel("Target: -")
+local collectedLabel = addStatusLabel("Eggs Collected: 0")
+local lastRarityLabel = addStatusLabel("Last Rarity: -")
+local uptimeLabel = addStatusLabel("Uptime: 00:00", Color3.fromRGB(180, 180, 180))
+local settingsLabel = addStatusLabel("Go: Multi  |  Return: Tween  |  Hold: 0.75s", Color3.fromRGB(160, 140, 100))
+
+local function updateStatusPanel()
+	if not autoFarmEnabled then
+		statusPanel.Visible = false
+		return
+	end
+	statusPanel.Visible = true
+	statusLabel.Text = "Status: Running"
+	actionLabel.Text = "Action: " .. currentAction
+	targetLabel.Text = "Target: " .. currentTarget
+	collectedLabel.Text = "Eggs Collected: " .. eggsCollected
+	lastRarityLabel.Text = "Last Rarity: " .. lastCollectedRarity
+
+	local elapsed = math.floor(os.clock() - farmStartTime)
+	local mins = math.floor(elapsed / 60)
+	local secs = elapsed % 60
+	uptimeLabel.Text = string.format("Uptime: %02d:%02d", mins, secs)
+
+	settingsLabel.Text = string.format("Go: %s  |  Return: %s  |  Hold: %.2fs",
+		goMethod == "MultiTeleport" and "Multi" or "Tween",
+		returnMethod == "MultiTeleport" and "Multi" or "Tween",
+		Settings.CollectHoldTime)
+end
+
+task.spawn(function()
+	while task.wait(0.5) do
+		if autoFarmEnabled then
+			updateStatusPanel()
+		else
+			statusPanel.Visible = false
+		end
+	end
+end)
+
+-------------------------------------------------
+-- AUTO FARM LOOP
+-------------------------------------------------
+local function startAutoFarm()
+	if autoFarmRunning then return end
+	autoFarmRunning = true
+	farmStartTime = os.clock()
+	eggsCollected = 0
+	lastCollectedRarity = "-"
+	currentAction = "Starting..."
+	currentTarget = "-"
+
+	task.spawn(function()
+		while autoFarmEnabled do
+			local egg = getBestEgg()
+			if egg and egg.Parent then
+				local rarity = getEggRarity(egg.Name)
+				currentTarget = egg.Name .. " (" .. rarity .. ")"
+				currentAction = "Going to egg"
+				updateStatusPanel()
+
+				goToTarget(egg)
+				task.wait(0.25)
+
+				currentAction = "Holding to collect"
+				updateStatusPanel()
+				collectEgg(egg)
+				task.wait(0.2)
+
+				eggsCollected += 1
+				lastCollectedRarity = rarity
+
+				currentAction = "Returning to base"
+				updateStatusPanel()
+				returnToBase()
+
+				task.wait(Settings.AutoFarmDelay)
+			else
+				currentAction = "Waiting for eggs..."
+				currentTarget = "-"
+				updateStatusPanel()
+				task.wait(1.5)
+			end
+		end
+		autoFarmRunning = false
+		currentAction = "Stopped"
+		updateStatusPanel()
+	end)
+end
+
+-------------------------------------------------
+-- ESP (egg size labels)
+-------------------------------------------------
+local ESPFolder = Instance.new("Folder")
+ESPFolder.Name = "RideAPetESP"
+if CoreGui:FindFirstChild("RideAPetESP") then
+	CoreGui.RideAPetESP:Destroy()
+end
+ESPFolder.Parent = CoreGui
+
+local function getSizeLabel(egg)
+	local s = egg:GetExtentsSize()
+	local v = s.X * s.Y * s.Z
+	if v > 80 then return "HUGE", Color3.fromRGB(255, 70, 70)
+	elseif v > 40 then return "Large", Color3.fromRGB(255, 175, 50)
+	elseif v > 18 then return "Medium", Color3.fromRGB(60, 255, 130)
+	else return "Small", Color3.fromRGB(170, 170, 180) end
+end
+
+local function isEggAllowed(egg)
+	return enabledRarities[getEggRarity(egg.Name)] == true
+end
+
+local function createESP(egg)
+	if not espEnabled or not isEggAllowed(egg) then return end
+	local id = tostring(egg:GetDebugId())
+	if espObjects[id] then return end
+	local part = egg:FindFirstChild("EggBase") or egg.PrimaryPart or egg:FindFirstChildWhichIsA("BasePart")
+	if not part then return end
+
+	local bb = Instance.new("BillboardGui")
+	bb.Name = id
+	bb.Adornee = part
+	bb.Size = UDim2.new(0, 130, 0, 40)
+	bb.StudsOffset = Vector3.new(0, 4, 0)
+	bb.AlwaysOnTop = true
+	bb.Parent = ESPFolder
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.TextStrokeTransparency = 0.3
+	label.Font = Enum.Font.GothamBold
+	label.TextSize = 13
+	label.Parent = bb
+
+	local text, color = getSizeLabel(egg)
+	label.Text = egg.Name .. "\n" .. text
+	label.TextColor3 = color
+	espObjects[id] = bb
+end
+
+task.spawn(function()
+	while task.wait(0.7) do
+		if not espEnabled then
+			for _, g in pairs(espObjects) do g:Destroy() end
+			espObjects = {}
+			continue
+		end
+		local folder = workspace:FindFirstChild("RenderedEggs")
+		if not folder then continue end
+
+		local alive = {}
+		for _, egg in ipairs(folder:GetChildren()) do
+			if isEggAllowed(egg) then
+				local id = tostring(egg:GetDebugId())
+				alive[id] = true
+				createESP(egg)
+			end
+		end
+		for id, gui in pairs(espObjects) do
+			if not alive[id] then
+				gui:Destroy()
+				espObjects[id] = nil
+			end
+		end
+	end
+end)
 
 -------------------------------------------------
 -- BUILD WINDOW
@@ -184,7 +556,9 @@ local eggLeft, eggRight = window:CreateColumns(eggTab, 0.42)
 -- AUTO FARM
 local farmCard = window:CreateCard(eggLeft, "AUTO FARM", true)
 window:AddToggle(farmCard, "Auto Farm", Settings.AutoFarmEnabled, function(s)
+	autoFarmEnabled = s
 	Settings.AutoFarmEnabled = s
+	if s then startAutoFarm() end
 	saveSettings()
 end)
 window:AddSlider(farmCard, "Farm Delay (s)", 0.4, 4.0, Settings.AutoFarmDelay, function(v)
@@ -196,10 +570,12 @@ window:AddSlider(farmCard, "Collect Hold Time (s)", 0.3, 2.0, Settings.CollectHo
 	saveSettings()
 end)
 window:AddMethodSelector(farmCard, "Go to Egg", {"Tween", "MultiTeleport"}, Settings.GoMethod, function(v)
+	goMethod = v
 	Settings.GoMethod = v
 	saveSettings()
 end)
 window:AddMethodSelector(farmCard, "Return to Base", {"Tween", "MultiTeleport"}, Settings.ReturnMethod, function(v)
+	returnMethod = v
 	Settings.ReturnMethod = v
 	saveSettings()
 end)
@@ -208,29 +584,13 @@ end)
 local movementCard = window:CreateCard(eggLeft, "MOVEMENT", true)
 
 window:AddButton(movementCard, "Instant Return to Base", Color3.fromRGB(255, 120, 30), function()
-	local hrp = getHRP()
-	local basePos = getBasePosition()
-	if not hrp or not basePos then return end
-	hrp.CFrame = CFrame.new(basePos)
+	local base = getBase()
+	if base then teleportTo(base) end
 end)
 
 window:AddButton(movementCard, "Multi-Teleport to Base", Color3.fromRGB(200, 90, 20), function()
-	local hrp = getHRP()
-	local basePos = getBasePosition()
-	if not hrp or not basePos then return end
-
-	local startPos = hrp.Position
-	local steps = Settings.MultiStepSteps
-	local delay = Settings.MultiStepDelay
-
-	for i = 1, steps do
-		hrp = getHRP()
-		if not hrp then break end
-		local alpha = i / steps
-		local stepPos = startPos:Lerp(basePos, alpha)
-		hrp.CFrame = CFrame.new(stepPos)
-		task.wait(delay)
-	end
+	local base = getBase()
+	if base then multiTeleportTo(base) end
 end)
 
 window:AddSlider(movementCard, "Multi-Teleport Delay (s)", 0.2, 1.2, Settings.MultiStepDelay, function(v)
@@ -239,16 +599,8 @@ window:AddSlider(movementCard, "Multi-Teleport Delay (s)", 0.2, 1.2, Settings.Mu
 end)
 
 window:AddButton(movementCard, "Smooth Tween to Base", Color3.fromRGB(255, 140, 40), function()
-	local hrp = getHRP()
-	local basePos = getBasePosition()
-	if not hrp or not basePos then return end
-
-	local tween = TweenService:Create(
-		hrp,
-		TweenInfo.new(Settings.TweenDuration, Enum.EasingStyle.Linear),
-		{ CFrame = CFrame.new(basePos) }
-	)
-	tween:Play()
+	local base = getBase()
+	if base then tweenTo(base) end
 end)
 
 window:AddSlider(movementCard, "Tween Speed (s)", 2, 12, Settings.TweenDuration, function(v)
@@ -259,15 +611,17 @@ end)
 -- ADDITIONAL
 local additionalCard = window:CreateCard(eggLeft, "ADDITIONAL", true)
 window:AddToggle(additionalCard, "Auto Refresh", Settings.AutoRefreshEnabled, function(s)
+	autoRefreshEnabled = s
 	Settings.AutoRefreshEnabled = s
 	saveSettings()
 end)
 window:AddToggle(additionalCard, "Egg ESP", Settings.ESPEnabled, function(s)
+	espEnabled = s
 	Settings.ESPEnabled = s
 	saveSettings()
 end)
 
--- RARITIES + EGG LIST (right column)
+-- EGG LIST (right column)
 local eggListCard = window:CreateCard(eggRight, "EGG LIST", true)
 
 window:AddMultiSelectDropdown(eggListCard, "Rarities", Rarities, enabledRarities,
@@ -341,13 +695,7 @@ function refreshEggs()
 		if rarity and matchesSearch then
 			local color = RarityColors[rarity]
 			local btn = window:AddButton(eggScroll, egg.Name, color, function()
-				local hrp = getHRP()
-				if not hrp then return end
-
-				local targetPart = egg:IsA("BasePart") and egg or egg:FindFirstChildWhichIsA("BasePart")
-				if not targetPart then return end
-
-				hrp.CFrame = CFrame.new(targetPart.Position + Vector3.new(0, 3, 0))
+				teleportTo(egg)
 			end)
 			eggButtons[btn] = true
 		end
@@ -385,5 +733,18 @@ window:AddSlider(webhookCard, "Send Interval (minutes)", 5, 60, Settings.Webhook
 	Settings.WebhookInterval = v
 	saveSettings()
 end)
+
+-------------------------------------------------
+-- AUTO REFRESH LOOP
+-------------------------------------------------
+task.spawn(function()
+	while task.wait(Settings.AutoRefreshInterval) do
+		if autoRefreshEnabled then
+			refreshEggs()
+		end
+	end
+end)
+
+if autoFarmEnabled then startAutoFarm() end
 
 print("Ride A Pet module loaded")
