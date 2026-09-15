@@ -339,6 +339,7 @@ function UI:CreateCard(parent, titleText, defaultOpen)
 
 	local contentFrame = Instance.new("Frame")
 	contentFrame.Size = UDim2.new(1, 0, 0, 0)
+	contentFrame.Position = UDim2.new(0, 0, 0, 36) -- sit below the 36px header instead of overlapping it
 	contentFrame.AutomaticSize = Enum.AutomaticSize.Y
 	contentFrame.BackgroundTransparency = 1
 	contentFrame.Visible = defaultOpen
@@ -401,6 +402,10 @@ function UI:_createSelectorBox(parent, height)
 	return box, boxText, chevron
 end
 
+-- Parented to self.Main (not the ScreenGui) so it moves rigidly with the
+-- window when it's dragged, instead of staying frozen at the screen position
+-- it was opened at. Main doesn't clip its descendants, so this still escapes
+-- any scrolling column the triggering box happens to live inside.
 function UI:_createFloatingPanel(w, h)
 	local panel = Instance.new("Frame")
 	panel.Size = UDim2.new(0, w, 0, h)
@@ -408,21 +413,24 @@ function UI:_createFloatingPanel(w, h)
 	panel.BorderSizePixel = 0
 	panel.Visible = false
 	panel.ZIndex = 50
-	panel.Parent = self.ScreenGui
+	panel.Parent = self.Main
 	corner(panel, 8)
 	stroke(panel, ACCENT, 1, 0.6)
 	return panel
 end
 
--- Returns a setOpen(bool) function. Positions the panel just below `box`.
+-- Returns a setOpen(bool) function. Positions the panel just below `box`,
+-- as an offset relative to Main rather than an absolute screen position, so
+-- it tracks the window instead of detaching from it when dragged.
 function UI:_toggleFloatingPanel(box, panel, chevron)
 	local open = false
 	local function setOpen(state)
 		open = state
 		if open then
-			local absPos = box.AbsolutePosition
-			local absSize = box.AbsoluteSize
-			panel.Position = UDim2.new(0, absPos.X, 0, absPos.Y + absSize.Y + 4)
+			local mainPos = self.Main.AbsolutePosition
+			local boxPos = box.AbsolutePosition
+			local boxSize = box.AbsoluteSize
+			panel.Position = UDim2.new(0, boxPos.X - mainPos.X, 0, boxPos.Y - mainPos.Y + boxSize.Y + 4)
 		end
 		panel.Visible = open
 		if chevron then chevron.Text = open and "▲" or "▼" end
@@ -925,9 +933,10 @@ function UI:AddColorPicker(parent, label, default, callback)
 	buildChannel(68, "B", b, function(v) b = v end)
 
 	swatch.MouseButton1Click:Connect(function()
+		local mainPos = self.Main.AbsolutePosition
 		local absPos = swatch.AbsolutePosition
 		local absSize = swatch.AbsoluteSize
-		panel.Position = UDim2.new(0, absPos.X - 176, 0, absPos.Y + absSize.Y + 4)
+		panel.Position = UDim2.new(0, (absPos.X - mainPos.X) - 176, 0, (absPos.Y - mainPos.Y) + absSize.Y + 4)
 		panel.Visible = not panel.Visible
 	end)
 
