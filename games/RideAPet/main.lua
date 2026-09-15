@@ -276,7 +276,6 @@ window:AddMultiSelectDropdown(rarityCard, "Rarities", Rarities, enabledRarities,
 		saveSettings()
 		refreshEggs()
 	end)
-end
 
 local searchRow = Instance.new("Frame")
 searchRow.Size = UDim2.new(1, 0, 0, 36)
