@@ -510,7 +510,7 @@ function UI:AddMultiSelectDropdown(parent, label, options, selectedSet, colorFor
 	chevron.Size = UDim2.new(0, 24, 1, 0)
 	chevron.Position = UDim2.new(1, -30, 0, 0)
 	chevron.BackgroundTransparency = 1
-	chevron.Text = "⌄"
+	chevron.Text = "▼"
 	chevron.TextColor3 = ACCENT
 	chevron.Font = Enum.Font.GothamBold
 	chevron.TextSize = 16
@@ -630,7 +630,7 @@ function UI:AddMultiSelectDropdown(parent, label, options, selectedSet, colorFor
 			panel.Position = UDim2.new(0, absPos.X, 0, absPos.Y + absSize.Y + 4)
 		end
 		panel.Visible = open
-		chevron.Text = open and "⌃" or "⌄"
+		chevron.Text = open and "▲" or "▼"
 	end)
 
 	return container
