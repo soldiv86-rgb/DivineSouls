@@ -468,6 +468,173 @@ function UI:AddSlider(parent, label, minV, maxV, default, callback)
 	set(default)
 	return frame
 end
+-- Compact collapsible multi-select: shows selected items as text,
+-- expands into a floating searchable checklist when tapped.
+function UI:AddMultiSelectDropdown(parent, label, options, selectedSet, colorFor, onChange)
+	local container = Instance.new("Frame")
+	container.Size = UDim2.new(1, 0, 0, 54)
+	container.BackgroundTransparency = 1
+	container.Parent = parent
+
+	local labelLbl = Instance.new("TextLabel")
+	labelLbl.Size = UDim2.new(1, 0, 0, 18)
+	labelLbl.BackgroundTransparency = 1
+	labelLbl.Text = label
+	labelLbl.TextColor3 = Color3.fromRGB(200, 160, 100)
+	labelLbl.Font = Enum.Font.Gotham
+	labelLbl.TextSize = 12
+	labelLbl.TextXAlignment = Enum.TextXAlignment.Left
+	labelLbl.Parent = container
+
+	local box = Instance.new("TextButton")
+	box.Size = UDim2.new(1, 0, 0, 34)
+	box.Position = UDim2.new(0, 0, 0, 20)
+	box.BackgroundColor3 = Color3.fromRGB(24, 24, 26)
+	box.Text = ""
+	box.AutoButtonColor = false
+	box.Parent = container
+	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
+
+	local boxText = Instance.new("TextLabel")
+	boxText.Size = UDim2.new(1, -40, 1, 0)
+	boxText.Position = UDim2.new(0, 10, 0, 0)
+	boxText.BackgroundTransparency = 1
+	boxText.TextColor3 = Color3.fromRGB(230, 180, 110)
+	boxText.Font = Enum.Font.Gotham
+	boxText.TextSize = 13
+	boxText.TextXAlignment = Enum.TextXAlignment.Left
+	boxText.ClipsDescendants = true
+	boxText.Parent = box
+
+	local chevron = Instance.new("TextLabel")
+	chevron.Size = UDim2.new(0, 24, 1, 0)
+	chevron.Position = UDim2.new(1, -30, 0, 0)
+	chevron.BackgroundTransparency = 1
+	chevron.Text = "⌄"
+	chevron.TextColor3 = ACCENT
+	chevron.Font = Enum.Font.GothamBold
+	chevron.TextSize = 16
+	chevron.Parent = box
+
+	local function updateBoxText()
+		local names = {}
+		for _, name in ipairs(options) do
+			if selectedSet[name] then table.insert(names, name) end
+		end
+		boxText.Text = (#names == 0) and "..." or table.concat(names, ", ")
+	end
+	updateBoxText()
+
+	-- Floating panel — parented to the ScreenGui itself so it overlays
+	-- everything else instead of pushing nearby UI around.
+	local panel = Instance.new("Frame")
+	panel.Size = UDim2.new(0, 260, 0, 300)
+	panel.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+	panel.BorderSizePixel = 0
+	panel.Visible = false
+	panel.ZIndex = 50
+	panel.Parent = self.ScreenGui
+	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 8)
+	local pStroke = Instance.new("UIStroke", panel)
+	pStroke.Color = ACCENT
+	pStroke.Thickness = 1
+	pStroke.Transparency = 0.6
+
+	local search = Instance.new("TextBox")
+	search.Size = UDim2.new(1, -16, 0, 30)
+	search.Position = UDim2.new(0, 8, 0, 8)
+	search.BackgroundColor3 = Color3.fromRGB(28, 28, 30)
+	search.PlaceholderText = "Search.."
+	search.Text = ""
+	search.TextColor3 = Color3.fromRGB(255, 200, 140)
+	search.PlaceholderColor3 = Color3.fromRGB(120, 100, 80)
+	search.Font = Enum.Font.Gotham
+	search.TextSize = 13
+	search.ClearTextOnFocus = false
+	search.ZIndex = 51
+	search.Parent = panel
+	Instance.new("UICorner", search).CornerRadius = UDim.new(0, 6)
+
+	local list = Instance.new("ScrollingFrame")
+	list.Size = UDim2.new(1, -16, 1, -46)
+	list.Position = UDim2.new(0, 8, 0, 44)
+	list.BackgroundTransparency = 1
+	list.BorderSizePixel = 0
+	list.ScrollBarThickness = 3
+	list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	list.ZIndex = 51
+	list.Parent = panel
+	local listLayout = Instance.new("UIListLayout", list)
+	listLayout.Padding = UDim.new(0, 4)
+
+	local rows = {}
+	local function rebuildRows(filter)
+		for _, r in ipairs(rows) do r:Destroy() end
+		rows = {}
+		for _, name in ipairs(options) do
+			if filter == "" or name:lower():find(filter:lower(), 1, true) then
+				local row = Instance.new("TextButton")
+				row.Size = UDim2.new(1, 0, 0, 32)
+				row.BackgroundColor3 = Color3.fromRGB(24, 24, 26)
+				row.Text = ""
+				row.AutoButtonColor = false
+				row.ZIndex = 52
+				row.Parent = list
+				Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+
+				local bar = Instance.new("Frame")
+				bar.Size = UDim2.new(0, 4, 1, -10)
+				bar.Position = UDim2.new(0, 5, 0, 5)
+				bar.BackgroundColor3 = colorFor and colorFor(name) or ACCENT
+				bar.BorderSizePixel = 0
+				bar.Visible = selectedSet[name] == true
+				bar.ZIndex = 53
+				bar.Parent = row
+				Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 2)
+
+				local rowLabel = Instance.new("TextLabel")
+				rowLabel.Size = UDim2.new(1, -24, 1, 0)
+				rowLabel.Position = UDim2.new(0, 18, 0, 0)
+				rowLabel.BackgroundTransparency = 1
+				rowLabel.Text = name
+				rowLabel.TextColor3 = Color3.fromRGB(230, 200, 150)
+				rowLabel.Font = Enum.Font.Gotham
+				rowLabel.TextSize = 13
+				rowLabel.TextXAlignment = Enum.TextXAlignment.Left
+				rowLabel.ZIndex = 53
+				rowLabel.Parent = row
+
+				row.MouseButton1Click:Connect(function()
+					selectedSet[name] = not selectedSet[name]
+					bar.Visible = selectedSet[name] == true
+					updateBoxText()
+					if onChange then onChange(name, selectedSet[name], selectedSet) end
+				end)
+
+				table.insert(rows, row)
+			end
+		end
+	end
+	rebuildRows("")
+
+	search:GetPropertyChangedSignal("Text"):Connect(function()
+		rebuildRows(search.Text)
+	end)
+
+	local open = false
+	box.MouseButton1Click:Connect(function()
+		open = not open
+		if open then
+			local absPos = box.AbsolutePosition
+			local absSize = box.AbsoluteSize
+			panel.Position = UDim2.new(0, absPos.X, 0, absPos.Y + absSize.Y + 4)
+		end
+		panel.Visible = open
+		chevron.Text = open and "⌃" or "⌄"
+	end)
+
+	return container
+end
 
 function UI:AddButton(parent, text, color, callback)
 	color = color or ACCENT
