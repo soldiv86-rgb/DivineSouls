@@ -154,6 +154,22 @@ window:AddSlider(eggCard, "Minimum KG", 1000, 100000, Settings.MinEggKG, functio
 	saveSettings()
 end)
 
+local allEggNames = {}
+local eggNameToRarity = {}
+for _, rarity in ipairs(Rarities) do
+	for _, eggName in ipairs(RarityEggs[rarity] or {}) do
+		table.insert(allEggNames, eggName)
+		eggNameToRarity[eggName] = rarity
+	end
+end
+
+window:AddMultiSelectDropdown(eggCard, "Select Eggs to Place", allEggNames, selectedEggs,
+	function(eggName) return RarityColors[eggNameToRarity[eggName]] end,
+	function(eggName, state)
+		Settings.SelectedEggs = selectedEggs
+		saveSettings()
+	end)
+
 local buyCard = window:CreateCard(autoRight, "AUTO BUY", true)
 window:AddToggle(buyCard, "Enable Auto Buy", Settings.AutoBuy, function(s)
 	Settings.AutoBuy = s
@@ -253,9 +269,9 @@ end)
 
 -- RARITIES + EGG LIST (right column)
 local rarityCard = window:CreateCard(eggRight, "RARITIES", true)
-for _, rarity in ipairs(Rarities) do
-	window:AddToggle(rarityCard, rarity, enabledRarities[rarity], function(state)
-		enabledRarities[rarity] = state
+window:AddMultiSelectDropdown(rarityCard, "Rarities", Rarities, enabledRarities,
+	function(name) return RarityColors[name] end,
+	function(name, state)
 		Settings.EnabledRarities = enabledRarities
 		saveSettings()
 		refreshEggs()
