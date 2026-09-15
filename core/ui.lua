@@ -215,6 +215,7 @@ function UI.new(title, subtitle)
 	makeDraggable(headerBar, self.Main, nil)
 
 	self._nextTabY = 70
+	self._floatingPanelClosers = {}
 	return self
 end
 
@@ -257,6 +258,12 @@ function UI:CreateTab(name)
 end
 
 function UI:SetActiveTab(name)
+	-- Floating dropdown/color-picker panels live under self.Main, not under
+	-- any tab page, so switching tabs wouldn't otherwise close them.
+	for _, close in ipairs(self._floatingPanelClosers) do
+		close()
+	end
+
 	for tabName, page in pairs(self.Tabs) do
 		page.Visible = (tabName == name)
 	end
@@ -436,6 +443,7 @@ function UI:_toggleFloatingPanel(box, panel, chevron)
 		if chevron then chevron.Text = open and "▲" or "▼" end
 	end
 	box.MouseButton1Click:Connect(function() setOpen(not open) end)
+	table.insert(self._floatingPanelClosers, function() setOpen(false) end)
 	return setOpen
 end
 
@@ -932,13 +940,20 @@ function UI:AddColorPicker(parent, label, default, callback)
 	buildChannel(34, "G", g, function(v) g = v end)
 	buildChannel(68, "B", b, function(v) b = v end)
 
+	local function setOpen(state)
+		panel.Visible = state
+	end
+
 	swatch.MouseButton1Click:Connect(function()
-		local mainPos = self.Main.AbsolutePosition
-		local absPos = swatch.AbsolutePosition
-		local absSize = swatch.AbsoluteSize
-		panel.Position = UDim2.new(0, (absPos.X - mainPos.X) - 176, 0, (absPos.Y - mainPos.Y) + absSize.Y + 4)
-		panel.Visible = not panel.Visible
+		if not panel.Visible then
+			local mainPos = self.Main.AbsolutePosition
+			local absPos = swatch.AbsolutePosition
+			local absSize = swatch.AbsoluteSize
+			panel.Position = UDim2.new(0, (absPos.X - mainPos.X) - 176, 0, (absPos.Y - mainPos.Y) + absSize.Y + 4)
+		end
+		setOpen(not panel.Visible)
 	end)
+	table.insert(self._floatingPanelClosers, function() setOpen(false) end)
 
 	return container, function() return currentColor end
 end
