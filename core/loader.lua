@@ -30,8 +30,12 @@ function Loader:Run()
 	end
 
 	local success2, err = pcall(function()
-		loadstring(result)()
-	end)
+	local chunk, compileErr = loadstring(result)
+	if not chunk then
+		error("Failed to compile game module: " .. tostring(compileErr))
+	end
+	chunk()
+end)
 
 	if not success2 then
 		warn("[DivineSouls] Error running game module: " .. tostring(err))
