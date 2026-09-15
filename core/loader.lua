@@ -5,7 +5,7 @@ local BASE_URL = "https://raw.githubusercontent.com/soldiv86-rgb/DivineSouls/mai
 
 -- Map Roblox game IDs to the folder name inside /games
 local GAME_MAP = {
-	["124216119978534"] = "Ride A Pet", -- replace with the real GameId of the game this maps to
+	["10035204815"] = "Ride A Pet", -- replace with the real GameId of the game this maps to
 	-- ["1111111"] = "game2",
 }
 
