@@ -6,7 +6,7 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 
 -- Load the shared UI library
-local UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR-USERNAME/script-hub/main/core/ui.lua"))()
+local UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/soldiv86-rgb/DivineSouls/main/core/ui.lua"))()
 
 -------------------------------------------------
 -- SETTINGS
