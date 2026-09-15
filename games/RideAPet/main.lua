@@ -268,8 +268,9 @@ window:AddToggle(additionalCard, "Egg ESP", Settings.ESPEnabled, function(s)
 end)
 
 -- RARITIES + EGG LIST (right column)
-local rarityCard = window:CreateCard(eggRight, "RARITIES", true)
-window:AddMultiSelectDropdown(rarityCard, "Rarities", Rarities, enabledRarities,
+local eggListCard = window:CreateCard(eggRight, "EGG LIST", true)
+
+window:AddMultiSelectDropdown(eggListCard, "Rarities", Rarities, enabledRarities,
 	function(name) return RarityColors[name] end,
 	function(name, state)
 		Settings.EnabledRarities = enabledRarities
@@ -280,7 +281,7 @@ window:AddMultiSelectDropdown(rarityCard, "Rarities", Rarities, enabledRarities,
 local searchRow = Instance.new("Frame")
 searchRow.Size = UDim2.new(1, 0, 0, 36)
 searchRow.BackgroundTransparency = 1
-searchRow.Parent = eggRight
+searchRow.Parent = eggListCard
 
 local eggSearch = Instance.new("TextBox")
 eggSearch.Size = UDim2.new(1, -100, 1, 0)
@@ -294,6 +295,8 @@ eggSearch.TextSize = 13
 eggSearch.ClearTextOnFocus = false
 eggSearch.Parent = searchRow
 Instance.new("UICorner", eggSearch).CornerRadius = UDim.new(0, 8)
+local eggSearchPad = Instance.new("UIPadding", eggSearch)
+eggSearchPad.PaddingLeft = UDim.new(0, 10)
 
 local refreshBtn = Instance.new("TextButton")
 refreshBtn.Size = UDim2.new(0, 90, 1, 0)
@@ -308,13 +311,12 @@ refreshBtn.Parent = searchRow
 Instance.new("UICorner", refreshBtn).CornerRadius = UDim.new(0, 8)
 
 local eggScroll = Instance.new("ScrollingFrame")
-eggScroll.Size = UDim2.new(1, 0, 1, -160)
-eggScroll.Position = UDim2.new(0, 0, 0, 175)
+eggScroll.Size = UDim2.new(1, 0, 0, 320)
 eggScroll.BackgroundTransparency = 1
 eggScroll.BorderSizePixel = 0
 eggScroll.ScrollBarThickness = 3
 eggScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-eggScroll.Parent = eggRight
+eggScroll.Parent = eggListCard
 Instance.new("UIListLayout", eggScroll).Padding = UDim.new(0, 6)
 
 function refreshEggs()
