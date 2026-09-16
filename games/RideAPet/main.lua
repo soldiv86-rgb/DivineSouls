@@ -348,13 +348,28 @@ local function getActiveAutomations()
 	return table.concat(active, ", ")
 end
 
--- Fetches the player's headshot thumbnail for the webhook embed. Returns nil
--- (rather than throwing) if the thumbnail service call fails for any reason.
+-- Fetches the player's headshot as a real HTTPS URL for the webhook embed
+-- thumbnail. Players:GetUserThumbnailAsync() looks like the right tool here,
+-- but it returns a Roblox-internal "rbxthumb://" content ID meant for the
+-- engine's own Image properties - Discord can't fetch that scheme. Hitting
+-- Roblox's public Thumbnails API directly gets an actual https:// image URL.
 local function getAvatarThumbnail()
-	local ok, url = pcall(function()
-		return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+	local httpGet = (syn and syn.request) or (http and http.request) or http_request or request
+	if not httpGet then return nil end
+
+	local ok, result = pcall(function()
+		local res = httpGet({
+			Url = string.format(
+				"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=%d&size=150x150&format=Png&isCircular=false",
+				player.UserId
+			),
+			Method = "GET",
+		})
+		local decoded = HttpService:JSONDecode(res.Body)
+		return decoded.data and decoded.data[1] and decoded.data[1].imageUrl
 	end)
-	if ok then return url end
+
+	if ok and result then return result end
 	return nil
 end
 
@@ -665,6 +680,37 @@ end
 -------------------------------------------------
 -- WEBHOOK
 -------------------------------------------------
+-- Posts to Discord and actually verifies the result, instead of trusting
+-- pcall (which only catches Lua-level errors, not HTTP failures). Executors'
+-- request/http_request functions return a response table like
+-- {Success, StatusCode, StatusMessage, Body} and do NOT error on a 4xx/5xx -
+-- so without checking StatusCode, a bad URL or a malformed payload looks
+-- identical to a successful send. Returns (true) or (false, reasonString).
+local function postToDiscord(httpRequest, payload)
+	local ok, response = pcall(function()
+		return httpRequest({
+			Url = Settings.WebhookURL,
+			Method = "POST",
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = HttpService:JSONEncode(payload),
+		})
+	end)
+
+	if not ok then
+		return false, "Request errored: " .. tostring(response)
+	end
+
+	local status = response and response.StatusCode
+	local success = response and response.Success ~= false and (not status or (status >= 200 and status < 300))
+
+	if not success then
+		local reason = (response and response.Body) or (response and response.StatusMessage) or "no response"
+		return false, string.format("Discord returned status %s: %s", tostring(status), tostring(reason))
+	end
+
+	return true
+end
+
 -- isTest: when true, shows a UI notification with the send result (success/
 -- failure) instead of failing silently, and labels the embed as a test.
 local function sendWebhook(isTest)
@@ -723,19 +769,12 @@ local function sendWebhook(isTest)
 		embed.thumbnail = { url = avatarUrl }
 	end
 
-	local payload = { embeds = { embed } }
-
-	local ok = pcall(function()
-		httpRequest({
-			Url = Settings.WebhookURL,
-			Method = "POST",
-			Headers = { ["Content-Type"] = "application/json" },
-			Body = HttpService:JSONEncode(payload),
-		})
-	end)
+	local sent, err = postToDiscord(httpRequest, { embeds = { embed } })
 
 	if isTest then
-		window:Notify("Webhook", ok and "Test message sent!" or "Failed to send - check the URL.", 3)
+		window:Notify("Webhook", sent and "Test message sent!" or ("Failed: " .. tostring(err)), sent and 3 or 6)
+	elseif not sent then
+		warn("[RideAPet] Webhook send failed: " .. tostring(err))
 	end
 end
 
