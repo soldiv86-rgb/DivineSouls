@@ -6,11 +6,14 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 -- Load the shared UI library
 local UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/soldiv86-rgb/DivineSouls/main/core/ui.lua"))()
+
+local GameRemotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Game")
 
 -------------------------------------------------
 -- SETTINGS
@@ -95,6 +98,12 @@ local RarityEggs = {
 	Common = { "Brown Egg", "White Egg" },
 }
 
+-- Every known shop item, by category, for the Autobuy remote
+local AutobuyItems = {
+	{"Gears", "Royal Radar"}, {"Gears", "Magic Radar"}, {"Gears", "Advanced Radar"}, {"Gears", "Angelic Radar"},
+	{"Food", "Grass"}, {"Food", "Bone"}, {"Food", "Magic Apple"}, {"Food", "Meat"}, {"Food", "Dragonfruit"},
+}
+
 local currentSearch = ""
 local selectedEggs = Settings.SelectedEggs or {}
 local enabledRarities = Settings.EnabledRarities
@@ -123,29 +132,38 @@ local function getHRP()
 	return character:FindFirstChild("HumanoidRootPart")
 end
 
--- Dynamically finds the plot owned by this player, instead of a hardcoded path.
--- Falls back to the fixed path if dynamic lookup doesn't find anything.
-local function getBase()
+-- Returns the Plot MODEL owned by this player (not just the Baseplate part),
+-- since Auto Feed/Hatch/Place need to reach into Plot.Pets/Eggs/Nests too.
+local function getOwnedPlot()
 	local plots = workspace:FindFirstChild("Plots")
-	if plots then
-		for _, plot in ipairs(plots:GetChildren()) do
-			local data = plot:FindFirstChild("Data")
-			if data then
-				local ownerValue = data:FindFirstChild("Owner")
-				if ownerValue and ownerValue:IsA("ObjectValue") then
-					local owner = ownerValue.Value
-					local isMine = (typeof(owner) == "string" and owner == player.Name)
-						or (typeof(owner) == "Instance" and owner == player)
-					if isMine then
-						return plot:FindFirstChild("Baseplate")
-							or plot:FindFirstChild("Base")
-							or plot:FindFirstChildWhichIsA("BasePart")
-							or plot:FindFirstChild("Spawn")
-							or plot.PrimaryPart
-					end
+	if not plots then return nil end
+	for _, plot in ipairs(plots:GetChildren()) do
+		local data = plot:FindFirstChild("Data")
+		if data then
+			local ownerValue = data:FindFirstChild("Owner")
+			if ownerValue and ownerValue:IsA("ObjectValue") then
+				local owner = ownerValue.Value
+				local isMine = (typeof(owner) == "string" and owner == player.Name)
+					or (typeof(owner) == "Instance" and owner == player)
+				if isMine then
+					return plot
 				end
 			end
 		end
+	end
+	return nil
+end
+
+-- Dynamically finds the plot owned by this player, instead of a hardcoded path.
+-- Falls back to the fixed path if dynamic lookup doesn't find anything.
+local function getBase()
+	local plot = getOwnedPlot()
+	if plot then
+		return plot:FindFirstChild("Baseplate")
+			or plot:FindFirstChild("Base")
+			or plot:FindFirstChildWhichIsA("BasePart")
+			or plot:FindFirstChild("Spawn")
+			or plot.PrimaryPart
 	end
 
 	-- Fallback: fixed path, in case this game doesn't use per-player Data/Owner
@@ -214,7 +232,6 @@ local function returnToBase()
 	end
 end
 
--- Holds down the egg's collect prompt for Settings.CollectHoldTime seconds
 local function collectEgg(egg)
 	local prompt = egg:FindFirstChildWhichIsA("ProximityPrompt", true)
 	if prompt then
@@ -225,8 +242,6 @@ local function collectEgg(egg)
 		end)
 		return
 	end
-
-	-- Fallback if there's no ProximityPrompt: simulate holding E
 	pcall(function()
 		VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
 		task.wait(Settings.CollectHoldTime)
@@ -243,11 +258,9 @@ local function getEggRarity(eggName)
 	return "Unknown"
 end
 
--- Picks the highest-priority (rarest enabled) egg currently rendered
 local function getBestEgg()
 	local rendered = workspace:FindFirstChild("RenderedEggs")
 	if not rendered then return nil end
-
 	local bestEgg, bestPriority = nil, -1
 	for _, egg in ipairs(rendered:GetChildren()) do
 		local rarity = getEggRarity(egg.Name)
@@ -260,6 +273,27 @@ local function getBestEgg()
 		end
 	end
 	return bestEgg
+end
+
+-- Pulls the KG number out of a pet tool's name, e.g. "Fox [1,711 KG]" -> 1711.
+-- Returns nil for tools that aren't pets (eggs/food/gear don't have this format).
+local function getPetKGFromName(name)
+	local numStr = name:match("%[([%d,]+) KG%]")
+	if not numStr then return nil end
+	return tonumber((numStr:gsub(",", "")))
+end
+
+-- First nest on the plot that isn't marked Occupied
+local function getUnoccupiedNest()
+	local plot = getOwnedPlot()
+	local nests = plot and plot:FindFirstChild("Nests")
+	if not nests then return nil end
+	for _, nest in ipairs(nests:GetChildren()) do
+		if nest:GetAttribute("Occupied") ~= true then
+			return nest
+		end
+	end
+	return nil
 end
 
 -------------------------------------------------
@@ -374,22 +408,17 @@ local function startAutoFarm()
 				currentTarget = egg.Name .. " (" .. rarity .. ")"
 				currentAction = "Going to egg"
 				updateStatusPanel()
-
 				goToTarget(egg)
 				task.wait(0.25)
-
 				currentAction = "Holding to collect"
 				updateStatusPanel()
 				collectEgg(egg)
 				task.wait(0.2)
-
 				eggsCollected += 1
 				lastCollectedRarity = rarity
-
 				currentAction = "Returning to base"
 				updateStatusPanel()
 				returnToBase()
-
 				task.wait(Settings.AutoFarmDelay)
 			else
 				currentAction = "Waiting for eggs..."
@@ -401,6 +430,115 @@ local function startAutoFarm()
 		autoFarmRunning = false
 		currentAction = "Stopped"
 		updateStatusPanel()
+	end)
+end
+
+-------------------------------------------------
+-- AUTO FEED LOOP
+-------------------------------------------------
+local autoFeedRunning = false
+local function startAutoFeed()
+	if autoFeedRunning then return end
+	autoFeedRunning = true
+	task.spawn(function()
+		while Settings.AutoFeed do
+			local plot = getOwnedPlot()
+			local petsFolder = plot and plot:FindFirstChild("Pets")
+			if petsFolder then
+				for _, pet in ipairs(petsFolder:GetChildren()) do
+					local age = pet:GetAttribute("Age")
+					local petKey = pet:GetAttribute("PetKey")
+					if age and petKey and age < Settings.DesiredAge then
+						local backpack = player:FindFirstChild("Backpack")
+						if backpack then
+							for _, food in ipairs(backpack:GetChildren()) do
+								local data = food:FindFirstChild("Data")
+								local amount = data and data:FindFirstChild("Amount")
+								if amount and amount.Value > 0 then
+									GameRemotes:WaitForChild("FeedPet"):FireServer(petKey, food.Name)
+									task.wait(0.3)
+									break
+								end
+							end
+						end
+					end
+				end
+			end
+			task.wait(2)
+		end
+		autoFeedRunning = false
+	end)
+end
+
+-------------------------------------------------
+-- AUTO HATCH LOOP
+-------------------------------------------------
+local autoHatchRunning = false
+local function startAutoHatch()
+	if autoHatchRunning then return end
+	autoHatchRunning = true
+	task.spawn(function()
+		while Settings.AutoHatch do
+			local plot = getOwnedPlot()
+			local eggsFolder = plot and plot:FindFirstChild("Eggs")
+			if eggsFolder then
+				for _, egg in ipairs(eggsFolder:GetChildren()) do
+					local eggKey = egg:GetAttribute("EggKey")
+					if eggKey then
+						GameRemotes:WaitForChild("Hatch"):FireServer({EggKey = eggKey})
+						task.wait(0.3)
+					end
+				end
+			end
+			task.wait(2)
+		end
+		autoHatchRunning = false
+	end)
+end
+
+-------------------------------------------------
+-- AUTO PLACE BEST PET LOOP
+-------------------------------------------------
+-- NOTE: nest position lookup is a best-effort guess based on the plot dump
+-- (Nests/<n>/Model). If pets land in the wrong spot, tell me and we'll
+-- adjust getUnoccupiedNest() with more exact data.
+local function placeBestPet()
+	local backpack = player:FindFirstChild("Backpack")
+	if not backpack then return end
+
+	local bestTool, bestKG = nil, -1
+	for _, tool in ipairs(backpack:GetChildren()) do
+		local kg = getPetKGFromName(tool.Name)
+		if kg and kg > bestKG then
+			bestKG = kg
+			bestTool = tool
+		end
+	end
+	if not bestTool then return end
+
+	local petKey = bestTool:GetAttribute("PetKey")
+	if not petKey then return end
+
+	local nest = getUnoccupiedNest()
+	if not nest then return end
+
+	local nestPart = nest:FindFirstChild("Model") or nest:FindFirstChildWhichIsA("BasePart", true)
+	if not nestPart then return end
+
+	local pos = nestPart:IsA("Model") and nestPart:GetPivot().Position or nestPart.Position
+	GameRemotes:WaitForChild("PlacePet"):FireServer(petKey, pos.X, pos.Y, pos.Z)
+end
+
+local autoPlaceBestPetRunning = false
+local function startAutoPlaceBestPet()
+	if autoPlaceBestPetRunning then return end
+	autoPlaceBestPetRunning = true
+	task.spawn(function()
+		while Settings.AutoPlaceBestPet do
+			placeBestPet()
+			task.wait(3)
+		end
+		autoPlaceBestPetRunning = false
 	end)
 end
 
@@ -465,7 +603,6 @@ task.spawn(function()
 		end
 		local folder = workspace:FindFirstChild("RenderedEggs")
 		if not folder then continue end
-
 		local alive = {}
 		for _, egg in ipairs(folder:GetChildren()) do
 			if isEggAllowed(egg) then
@@ -502,10 +639,12 @@ local petCard = window:CreateCard(autoLeft, "PETS", true)
 window:AddToggle(petCard, "Auto Place Best Pet", Settings.AutoPlaceBestPet, function(s)
 	Settings.AutoPlaceBestPet = s
 	saveSettings()
+	if s then startAutoPlaceBestPet() end
 end)
 window:AddToggle(petCard, "Auto Feed", Settings.AutoFeed, function(s)
 	Settings.AutoFeed = s
 	saveSettings()
+	if s then startAutoFeed() end
 end)
 window:AddSlider(petCard, "Feed Until Desired Age", 1, 999, Settings.DesiredAge, function(v)
 	Settings.DesiredAge = v
@@ -516,10 +655,13 @@ local eggCard = window:CreateCard(autoLeft, "EGGS", true)
 window:AddToggle(eggCard, "Auto Hatch", Settings.AutoHatch, function(s)
 	Settings.AutoHatch = s
 	saveSettings()
+	if s then startAutoHatch() end
 end)
 window:AddToggle(eggCard, "Auto Place Egg", Settings.AutoPlaceEgg, function(s)
 	Settings.AutoPlaceEgg = s
 	saveSettings()
+	-- NOTE: placement mechanic not yet confirmed (likely a physical drag/drop,
+	-- not a simple remote call) - toggle saves state but doesn't act yet.
 end)
 window:AddSlider(eggCard, "Minimum KG", 1000, 100000, Settings.MinEggKG, function(v)
 	Settings.MinEggKG = v
@@ -546,6 +688,9 @@ local buyCard = window:CreateCard(autoRight, "AUTO BUY", true)
 window:AddToggle(buyCard, "Enable Auto Buy", Settings.AutoBuy, function(s)
 	Settings.AutoBuy = s
 	saveSettings()
+	for _, item in ipairs(AutobuyItems) do
+		GameRemotes:WaitForChild("Autobuy"):FireServer(item[1], item[2], s)
+	end
 end)
 
 -------------------------------------------------
@@ -553,7 +698,6 @@ end)
 -------------------------------------------------
 local eggLeft, eggRight = window:CreateColumns(eggTab, 0.42)
 
--- AUTO FARM
 local farmCard = window:CreateCard(eggLeft, "AUTO FARM", true)
 window:AddToggle(farmCard, "Auto Farm", Settings.AutoFarmEnabled, function(s)
 	autoFarmEnabled = s
@@ -580,35 +724,28 @@ window:AddMethodSelector(farmCard, "Return to Base", {"Tween", "MultiTeleport"},
 	saveSettings()
 end)
 
--- MOVEMENT
 local movementCard = window:CreateCard(eggLeft, "MOVEMENT", true)
-
 window:AddButton(movementCard, "Instant Return to Base", Color3.fromRGB(255, 120, 30), function()
 	local base = getBase()
 	if base then teleportTo(base) end
 end)
-
 window:AddButton(movementCard, "Multi-Teleport to Base", Color3.fromRGB(200, 90, 20), function()
 	local base = getBase()
 	if base then multiTeleportTo(base) end
 end)
-
 window:AddSlider(movementCard, "Multi-Teleport Delay (s)", 0.2, 1.2, Settings.MultiStepDelay, function(v)
 	Settings.MultiStepDelay = v
 	saveSettings()
 end)
-
 window:AddButton(movementCard, "Smooth Tween to Base", Color3.fromRGB(255, 140, 40), function()
 	local base = getBase()
 	if base then tweenTo(base) end
 end)
-
 window:AddSlider(movementCard, "Tween Speed (s)", 2, 12, Settings.TweenDuration, function(v)
 	Settings.TweenDuration = v
 	saveSettings()
 end)
 
--- ADDITIONAL
 local additionalCard = window:CreateCard(eggLeft, "ADDITIONAL", true)
 window:AddToggle(additionalCard, "Auto Refresh", Settings.AutoRefreshEnabled, function(s)
 	autoRefreshEnabled = s
@@ -621,9 +758,7 @@ window:AddToggle(additionalCard, "Egg ESP", Settings.ESPEnabled, function(s)
 	saveSettings()
 end)
 
--- EGG LIST (right column)
 local eggListCard = window:CreateCard(eggRight, "EGG LIST", true)
-
 window:AddMultiSelectDropdown(eggListCard, "Rarities", Rarities, enabledRarities,
 	function(name) return RarityColors[name] end,
 	function(name, state)
@@ -676,7 +811,6 @@ Instance.new("UIListLayout", eggScroll).Padding = UDim.new(0, 6)
 function refreshEggs()
 	for btn in pairs(eggButtons) do btn:Destroy() end
 	eggButtons = {}
-
 	local rendered = workspace:FindFirstChild("RenderedEggs")
 	if not rendered then return end
 
@@ -706,11 +840,9 @@ eggSearch:GetPropertyChangedSignal("Text"):Connect(function()
 	currentSearch = eggSearch.Text
 	refreshEggs()
 end)
-
 refreshBtn.MouseButton1Click:Connect(function()
 	refreshEggs()
 end)
-
 refreshEggs()
 
 -------------------------------------------------
@@ -729,6 +861,10 @@ window:AddToggle(webhookCard, "Enable Webhook", Settings.WebhookEnabled, functio
 	Settings.WebhookEnabled = s
 	saveSettings()
 end)
+window:AddTextbox(webhookCard, "Webhook URL", "https://discord.com/api/webhooks/...", Settings.WebhookURL, function(text)
+	Settings.WebhookURL = text
+	saveSettings()
+end)
 window:AddSlider(webhookCard, "Send Interval (minutes)", 5, 60, Settings.WebhookInterval, function(v)
 	Settings.WebhookInterval = v
 	saveSettings()
@@ -745,6 +881,10 @@ task.spawn(function()
 	end
 end)
 
+-- Resume any features that were left on from a previous session
 if autoFarmEnabled then startAutoFarm() end
+if Settings.AutoFeed then startAutoFeed() end
+if Settings.AutoHatch then startAutoHatch() end
+if Settings.AutoPlaceBestPet then startAutoPlaceBestPet() end
 
 print("Ride A Pet module loaded")
