@@ -284,10 +284,17 @@ if spySupported then
 	originalNamecall = hookmetamethod(game, "__namecall", function(self, ...)
 		local method = getnamecallmethod()
 		if spyEnabled and method == "FireServer" and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction")) then
+			-- Capture varargs into a table + count HERE, in the outer vararg
+			-- function. '...' (and select("#", ...)) can only be read directly
+			-- inside the function that declares (...) - reading it from the
+			-- nested pcall(function() ... end) below is a compile-time error
+			-- ("Cannot use '...' outside of a vararg function"), which is what
+			-- broke this whole script previously.
 			local args = { ... }
+			local argCount = select("#", ...)
 			local ok, formatted = pcall(function()
 				local parts = {}
-				for i = 1, select("#", ...) do
+				for i = 1, argCount do
 					local v = args[i]
 					if typeof(v) == "Instance" then
 						table.insert(parts, v:GetFullName())
