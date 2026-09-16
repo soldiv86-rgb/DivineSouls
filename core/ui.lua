@@ -225,7 +225,10 @@ function UI.new(title, subtitle, guiName)
 	headerTitle.Size = UDim2.new(1, -50, 1, 0)
 	headerTitle.Position = UDim2.new(0, 14, 0, 0)
 	headerTitle.BackgroundTransparency = 1
-	headerTitle.Text = title or "Script Hub"
+	-- Shows the game name (subtitle) rather than the hub brand (title), since
+	-- the sidebar already carries the hub brand up top. Falls back to title
+	-- if no subtitle was given.
+	headerTitle.Text = subtitle or title or "Script Hub"
 	headerTitle.TextColor3 = Color3.fromRGB(255, 170, 60)
 	headerTitle.Font = Enum.Font.GothamBold
 	headerTitle.TextSize = 16
@@ -1049,29 +1052,34 @@ function UI:AddColorPicker(parent, label, default, callback)
 	return container, function() return currentColor end
 end
 
--- Single-line text input with a label.
+-- Single-line text input with a label. Label sits above a full-width box
+-- (rather than side-by-side) and the box clips overflow, so long values
+-- like Discord webhook URLs stay contained inside the card instead of
+-- bleeding past its border. You can still click into the box and scroll
+-- through the full text while editing.
 function UI:AddTextbox(parent, label, placeholder, default, callback)
 	local frame = Instance.new("Frame")
-	frame.Size = UDim2.new(1, 0, 0, 34)
+	frame.Size = UDim2.new(1, 0, 0, 54)
 	frame.BackgroundColor3 = Color3.fromRGB(24, 24, 26)
 	frame.BorderSizePixel = 0
+	frame.ClipsDescendants = true
 	frame.Parent = parent
 	corner(frame, 8)
 
 	local labelLbl = Instance.new("TextLabel")
-	labelLbl.Size = UDim2.new(0.4, -10, 1, 0)
-	labelLbl.Position = UDim2.new(0, 10, 0, 0)
+	labelLbl.Size = UDim2.new(1, -20, 0, 16)
+	labelLbl.Position = UDim2.new(0, 10, 0, 6)
 	labelLbl.BackgroundTransparency = 1
 	labelLbl.Text = label
-	labelLbl.TextColor3 = Color3.fromRGB(230, 180, 110)
+	labelLbl.TextColor3 = Color3.fromRGB(220, 160, 90)
 	labelLbl.Font = Enum.Font.Gotham
-	labelLbl.TextSize = 13
+	labelLbl.TextSize = 12
 	labelLbl.TextXAlignment = Enum.TextXAlignment.Left
 	labelLbl.Parent = frame
 
 	local box = Instance.new("TextBox")
-	box.Size = UDim2.new(0.6, -10, 0, 24)
-	box.Position = UDim2.new(0.4, 0, 0.5, -12)
+	box.Size = UDim2.new(1, -20, 0, 26)
+	box.Position = UDim2.new(0, 10, 0, 24)
 	box.BackgroundColor3 = Color3.fromRGB(35, 30, 25)
 	box.PlaceholderText = placeholder or ""
 	box.Text = default or ""
@@ -1079,9 +1087,15 @@ function UI:AddTextbox(parent, label, placeholder, default, callback)
 	box.PlaceholderColor3 = Color3.fromRGB(120, 100, 80)
 	box.Font = Enum.Font.Gotham
 	box.TextSize = 12
+	box.TextXAlignment = Enum.TextXAlignment.Left
 	box.ClearTextOnFocus = false
+	box.ClipsDescendants = true
 	box.Parent = frame
 	corner(box, 6)
+
+	local boxPad = Instance.new("UIPadding", box)
+	boxPad.PaddingLeft = UDim.new(0, 8)
+	boxPad.PaddingRight = UDim.new(0, 8)
 
 	box.FocusLost:Connect(function(enterPressed)
 		safeCall(callback, box.Text, enterPressed)
