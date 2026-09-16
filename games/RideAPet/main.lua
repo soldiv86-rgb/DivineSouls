@@ -27,15 +27,15 @@ local webhookStatusLabel
 -------------------------------------------------
 local SAVE_FILE = "RideAPet_Settings.json"
 local Settings = {
-	TweenDuration = 8.0,
+	TweenDuration = 10,
 	MultiStepDelay = 0.8,
 	MultiStepSteps = 14,
 	AutoRefreshInterval = 3,
 	AutoFarmEnabled = false,
 	AutoFarmDelay = 4,
 	CollectHoldTime = 1,
-	GoMethod = "MultiTeleport",
-	ReturnMethod = "MultiTeleport",
+	GoMethod = "Tween",
+	ReturnMethod = "Tween",
 	AutoPlaceBestPet = false,
 	AutoFeed = false,
 	DesiredAge = 50,
@@ -47,15 +47,15 @@ local Settings = {
 	FoodShopSelected = {},
 	TrackShopSelected = {},
 	WebhookEnabled = false,
-	WebhookURL = "",
+	WebhookURL = "https://discord.com/api/webhooks/1497846669012897842/-9dGG04v7TtbnvZZ9BJkKmV4_sqShdsPvcU0lMufOA_MApAvPb0vtxO7CHWK7dyOHNjq",
 	WebhookInterval = 5,
 	TrackedBackpackItems = {},
 	ESPEnabled = true,
 	AutoRefreshEnabled = false,
 	-- Performance / ESP filter / webhook-ping additions
-	DeletePetsEnabled = false,
-	OptimizationMode = false,
-	UltraFPSBoost = false,
+	DeletePetsEnabled = true,
+	OptimizationMode = true,
+	UltraFPSBoost = true,
 	ESPMaxDistance = 1200,
 	ESPShowEveryone = false,
 	ESPMutations = {},
@@ -64,8 +64,8 @@ local Settings = {
 	WebhookUserId = "",
 	WebhookMentionEveryone = false,
 	EnabledRarities = {
-		Ethereal = true, Divine = true, Mythic = true, Legendary = true,
-		Epic = true, Rare = true, Common = true
+		Ethereal = true, Divine = true, Mythic = false, Legendary = false,
+		Epic = false, Rare = false, Common = false
 	}
 }
 
