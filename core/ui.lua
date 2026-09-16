@@ -30,13 +30,24 @@ local function stroke(inst, color, thickness, transparency)
 	return s
 end
 
+-- Tracks a connection on `self` so UI:Destroy() can clean it up later.
+-- UserInputService connections are NOT tied to instance lifetime - simply
+-- destroying the UI's Frames does not disconnect them, so every widget
+-- that hooks UserInputService needs to register its connections here.
+local function track(self, conn)
+	table.insert(self._connections, conn)
+	return conn
+end
+
 -- Makes `target` draggable via `handle`. onClick fires if the input ended
 -- without moving past the drag threshold (used for the floating open button,
 -- which is both draggable and clickable).
-local function makeDraggable(handle, target, onClick)
+-- Registers its UserInputService connections on `self` so UI:Destroy() can
+-- disconnect them; returns a disconnect() function for manual teardown too.
+local function makeDraggable(self, handle, target, onClick)
 	local dragging, dragStart, startPos, moved = false, nil, nil, false
 
-	handle.InputBegan:Connect(function(input)
+	local c1 = handle.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			moved = false
@@ -45,46 +56,70 @@ local function makeDraggable(handle, target, onClick)
 		end
 	end)
 
-	UserInputService.InputEnded:Connect(function(input)
+	local c2 = UserInputService.InputEnded:Connect(function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 			dragging = false
 			if not moved and onClick then onClick() end
 		end
 	end)
 
-	UserInputService.InputChanged:Connect(function(input)
+	local c3 = UserInputService.InputChanged:Connect(function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 			local delta = input.Position - dragStart
 			if math.abs(delta.X) > 5 or math.abs(delta.Y) > 5 then moved = true end
 			target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 		end
 	end)
+
+	track(self, c1)
+	track(self, c2)
+	track(self, c3)
+
+	return function()
+		c1:Disconnect()
+		c2:Disconnect()
+		c3:Disconnect()
+	end
 end
 
 -- Binds a horizontal track+knob pair to a numeric range. Used by AddSlider
 -- and AddColorPicker's RGB channels so the drag math only lives in one place.
-local function bindHorizontalDrag(track, knob, onDrag)
+-- Registers its UserInputService connections on `self` so UI:Destroy() can
+-- disconnect them; returns a disconnect() function for manual teardown too.
+local function bindHorizontalDrag(self, track_, knob, onDrag)
 	local sliding = false
-	knob.InputBegan:Connect(function(i)
+	local c1 = knob.InputBegan:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then sliding = true end
 	end)
-	UserInputService.InputEnded:Connect(function(i)
+	local c2 = UserInputService.InputEnded:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then sliding = false end
 	end)
-	UserInputService.InputChanged:Connect(function(i)
+	local c3 = UserInputService.InputChanged:Connect(function(i)
 		if sliding and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-			local rel = i.Position.X - track.AbsolutePosition.X
-			local a = math.clamp(rel / track.AbsoluteSize.X, 0, 1)
+			local rel = i.Position.X - track_.AbsolutePosition.X
+			local a = math.clamp(rel / track_.AbsoluteSize.X, 0, 1)
 			onDrag(a)
 		end
 	end)
 	-- also allow click-anywhere-on-track to jump to that position
-	track.InputBegan:Connect(function(i)
+	local c4 = track_.InputBegan:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-			local rel = i.Position.X - track.AbsolutePosition.X
-			onDrag(math.clamp(rel / track.AbsoluteSize.X, 0, 1))
+			local rel = i.Position.X - track_.AbsolutePosition.X
+			onDrag(math.clamp(rel / track_.AbsoluteSize.X, 0, 1))
 		end
 	end)
+
+	track(self, c1)
+	track(self, c2)
+	track(self, c3)
+	track(self, c4)
+
+	return function()
+		c1:Disconnect()
+		c2:Disconnect()
+		c3:Disconnect()
+		c4:Disconnect()
+	end
 end
 
 -- ============ WINDOW ============
@@ -92,6 +127,7 @@ function UI.new(title, subtitle)
 	local self = setmetatable({}, UI)
 	self.Tabs = {}
 	self.TabButtons = {}
+	self._connections = {} -- every UserInputService connection created by this UI, for Destroy()
 
 	if playerGui:FindFirstChild("ScriptHubUI") then
 		playerGui.ScriptHubUI:Destroy()
@@ -193,30 +229,51 @@ function UI.new(title, subtitle)
 	openBtn.Size = UDim2.new(0, 46, 0, 46)
 	openBtn.Position = UDim2.new(0, 30, 0, 100)
 	openBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 22)
-	openBtn.Text = (title or "SH"):sub(1, 2):upper()
+	openBtn.Text = (title and #title > 0) and title:sub(1, 2):upper() or "SH"
 	openBtn.TextColor3 = Color3.fromRGB(255, 160, 50)
 	openBtn.Font = Enum.Font.GothamBold
 	openBtn.TextSize = 14
 	openBtn.Parent = self.ScreenGui
 	corner(openBtn, 11)
 	stroke(openBtn, ACCENT, 1.4)
+	self.OpenButton = openBtn
 
 	local isOpen = true
-	closeBtn.MouseButton1Click:Connect(function()
+	track(self, closeBtn.MouseButton1Click:Connect(function()
 		self.Main.Visible = false
 		isOpen = false
-	end)
+	end))
 
-	makeDraggable(openBtn, openBtn, function()
+	makeDraggable(self, openBtn, openBtn, function()
 		isOpen = not isOpen
 		self.Main.Visible = isOpen
 	end)
 
-	makeDraggable(headerBar, self.Main, nil)
+	makeDraggable(self, headerBar, self.Main, nil)
 
 	self._nextTabY = 70
 	self._floatingPanelClosers = {}
 	return self
+end
+
+-- Disconnects every UserInputService connection this UI created (drag
+-- handlers, sliders, keybinds, etc.) and destroys the GUI instances.
+-- Call this when you're done with the UI (e.g. script unload) so nothing
+-- keeps firing against destroyed instances.
+function UI:Destroy()
+	for _, conn in ipairs(self._connections) do
+		if conn.Connected then
+			conn:Disconnect()
+		end
+	end
+	self._connections = {}
+
+	if self.ScreenGui then
+		self.ScreenGui:Destroy()
+	end
+	if self.OpenButton then
+		self.OpenButton:Destroy()
+	end
 end
 
 -- ============ TABS ============
@@ -530,19 +587,19 @@ function UI:AddSlider(parent, label, minV, maxV, default, callback)
 	box.Parent = frame
 	corner(box, 5)
 
-	local track = Instance.new("Frame")
-	track.Size = UDim2.new(1, -20, 0, 5)
-	track.Position = UDim2.new(0, 10, 0, 32)
-	track.BackgroundColor3 = Color3.fromRGB(40, 35, 30)
-	track.BorderSizePixel = 0
-	track.Parent = frame
-	corner(track, 999)
+	local sliderTrack = Instance.new("Frame")
+	sliderTrack.Size = UDim2.new(1, -20, 0, 5)
+	sliderTrack.Position = UDim2.new(0, 10, 0, 32)
+	sliderTrack.BackgroundColor3 = Color3.fromRGB(40, 35, 30)
+	sliderTrack.BorderSizePixel = 0
+	sliderTrack.Parent = frame
+	corner(sliderTrack, 999)
 
 	local fill = Instance.new("Frame")
 	fill.Size = UDim2.new(0, 0, 1, 0)
 	fill.BackgroundColor3 = ACCENT
 	fill.BorderSizePixel = 0
-	fill.Parent = track
+	fill.Parent = sliderTrack
 	corner(fill, 999)
 
 	local knob = Instance.new("TextButton")
@@ -550,7 +607,7 @@ function UI:AddSlider(parent, label, minV, maxV, default, callback)
 	knob.BackgroundColor3 = Color3.fromRGB(255, 180, 80)
 	knob.Text = ""
 	knob.AutoButtonColor = false
-	knob.Parent = track
+	knob.Parent = sliderTrack
 	corner(knob, 999)
 
 	local currentVal = default
@@ -565,7 +622,7 @@ function UI:AddSlider(parent, label, minV, maxV, default, callback)
 		if callback then callback(val) end
 	end
 
-	bindHorizontalDrag(track, knob, function(a)
+	bindHorizontalDrag(self, sliderTrack, knob, function(a)
 		set(minV + (maxV - minV) * a)
 	end)
 
@@ -768,8 +825,19 @@ function UI:AddMultiSelectDropdown(parent, label, options, selectedSet, colorFor
 	end
 	rebuildRows("")
 
+	-- Debounced so typing a search query doesn't rebuild every row on
+	-- every single keystroke (only matters once `options` gets large,
+	-- but it's free to guard against).
+	local searchToken = 0
 	search:GetPropertyChangedSignal("Text"):Connect(function()
-		rebuildRows(search.Text)
+		searchToken = searchToken + 1
+		local myToken = searchToken
+		local text = search.Text
+		task.delay(0.12, function()
+			if myToken == searchToken then
+				rebuildRows(text)
+			end
+		end)
 	end)
 
 	self:_toggleFloatingPanel(box, panel, chevron)
@@ -820,7 +888,7 @@ function UI:AddKeybind(parent, text, default, callback)
 		keyBtn.BackgroundColor3 = ACCENT
 	end)
 
-	UserInputService.InputBegan:Connect(function(input)
+	track(self, UserInputService.InputBegan:Connect(function(input)
 		if not listening then return end
 		if input.UserInputType == Enum.UserInputType.Keyboard then
 			if input.KeyCode == Enum.KeyCode.Escape then
@@ -834,7 +902,7 @@ function UI:AddKeybind(parent, text, default, callback)
 			listening = false
 			if callback then callback(currentKey) end
 		end
-	end)
+	end))
 
 	return frame, function() return currentKey end
 end
@@ -871,7 +939,8 @@ function UI:AddColorPicker(parent, label, default, callback)
 	corner(swatch, 6)
 	stroke(swatch, Color3.new(1, 1, 1), 1, 0.7)
 
-	local panel = self:_createFloatingPanel(210, 130)
+	local PANEL_W = 210
+	local panel = self:_createFloatingPanel(PANEL_W, 130)
 	local r, g, b = math.floor(default.R * 255), math.floor(default.G * 255), math.floor(default.B * 255)
 	local currentColor = default
 
@@ -900,21 +969,21 @@ function UI:AddColorPicker(parent, label, default, callback)
 		chLabel.ZIndex = 52
 		chLabel.Parent = row
 
-		local track = Instance.new("Frame")
-		track.Size = UDim2.new(1, 0, 0, 5)
-		track.Position = UDim2.new(0, 0, 0, 18)
-		track.BackgroundColor3 = Color3.fromRGB(40, 35, 30)
-		track.BorderSizePixel = 0
-		track.ZIndex = 51
-		track.Parent = row
-		corner(track, 999)
+		local channelTrack = Instance.new("Frame")
+		channelTrack.Size = UDim2.new(1, 0, 0, 5)
+		channelTrack.Position = UDim2.new(0, 0, 0, 18)
+		channelTrack.BackgroundColor3 = Color3.fromRGB(40, 35, 30)
+		channelTrack.BorderSizePixel = 0
+		channelTrack.ZIndex = 51
+		channelTrack.Parent = row
+		corner(channelTrack, 999)
 
 		local fill = Instance.new("Frame")
 		fill.Size = UDim2.new(initial / 255, 0, 1, 0)
 		fill.BackgroundColor3 = ACCENT
 		fill.BorderSizePixel = 0
 		fill.ZIndex = 52
-		fill.Parent = track
+		fill.Parent = channelTrack
 		corner(fill, 999)
 
 		local knob = Instance.new("TextButton")
@@ -924,10 +993,10 @@ function UI:AddColorPicker(parent, label, default, callback)
 		knob.Text = ""
 		knob.AutoButtonColor = false
 		knob.ZIndex = 53
-		knob.Parent = track
+		knob.Parent = channelTrack
 		corner(knob, 999)
 
-		bindHorizontalDrag(track, knob, function(a)
+		bindHorizontalDrag(self, channelTrack, knob, function(a)
 			local val = math.floor(a * 255 + 0.5)
 			fill.Size = UDim2.new(a, 0, 1, 0)
 			knob.Position = UDim2.new(a, -6, 0.5, -6)
@@ -949,7 +1018,9 @@ function UI:AddColorPicker(parent, label, default, callback)
 			local mainPos = self.Main.AbsolutePosition
 			local absPos = swatch.AbsolutePosition
 			local absSize = swatch.AbsoluteSize
-			panel.Position = UDim2.new(0, (absPos.X - mainPos.X) - 176, 0, (absPos.Y - mainPos.Y) + absSize.Y + 4)
+			-- derived from the panel's own width rather than a magic number,
+			-- so it stays correct if PANEL_W above ever changes
+			panel.Position = UDim2.new(0, (absPos.X - mainPos.X) - (PANEL_W - absSize.X), 0, (absPos.Y - mainPos.Y) + absSize.Y + 4)
 		end
 		setOpen(not panel.Visible)
 	end)
