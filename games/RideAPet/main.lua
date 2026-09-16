@@ -779,6 +779,7 @@ local function postToDiscord(httpRequest, payload)
 	end
 
 	return true
+  end
 end
 
 -- isTest: when true, shows a UI notification with the send result (success/
