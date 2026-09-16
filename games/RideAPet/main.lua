@@ -780,7 +780,6 @@ local function postToDiscord(httpRequest, payload)
 
 	return true
   end
-end
 
 -- isTest: when true, shows a UI notification with the send result (success/
 -- failure) instead of failing silently, and labels the embed as a test.
