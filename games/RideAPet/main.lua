@@ -16,9 +16,11 @@ local UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/soldiv86-r
 local GameRemotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Game")
 
 -- Forward-declared so functions defined earlier in the file (like
--- sendWebhook, which calls window:Notify) close over this local instead of
--- silently resolving to a nil global "window" that doesn't exist yet.
+-- sendWebhook, which calls window:Notify and updates webhookStatusLabel)
+-- close over these locals instead of silently resolving to nil globals
+-- that don't exist yet at that point in the script.
 local window
+local webhookStatusLabel
 
 -------------------------------------------------
 -- SETTINGS
@@ -44,22 +46,23 @@ local Settings = {
 	AutoBuy = false,
 	FoodShopSelected = {},
 	TrackShopSelected = {},
-	DeletePetsEnabled = false,
-    OptimizationMode = false,
-    UltraFPSBoost = false,
-    ESPMaxDistance = 1200,
-    ESPShowEveryone = false,
-    ESPMutations = {},
-    ESPOnlyMutated = false,
-    ESPMinWeight = 0,
-    WebhookMentionEveryone = false,
 	WebhookEnabled = false,
 	WebhookURL = "",
-	WebhookUserId = "",
 	WebhookInterval = 5,
 	TrackedBackpackItems = {},
 	ESPEnabled = true,
 	AutoRefreshEnabled = false,
+	-- Performance / ESP filter / webhook-ping additions
+	DeletePetsEnabled = false,
+	OptimizationMode = false,
+	UltraFPSBoost = false,
+	ESPMaxDistance = 1200,
+	ESPShowEveryone = false,
+	ESPMutations = {},
+	ESPOnlyMutated = false,
+	ESPMinWeight = 0,
+	WebhookUserId = "",
+	WebhookMentionEveryone = false,
 	EnabledRarities = {
 		Ethereal = true, Divine = true, Mythic = true, Legendary = true,
 		Epic = true, Rare = true, Common = true
@@ -118,6 +121,14 @@ local RarityEggs = {
 
 local FoodShopItems = {"Grass", "Bone", "Magic Apple", "Meat", "Dragonfruit"}
 local TrackShopItems = {"Royal Radar", "Magic Radar", "Advanced Radar", "Angelic Radar"}
+
+-- Declared at top-level (not inside any one tab-building block) so it's
+-- visible both to isEggAllowed (ESP filtering, further down) and to the
+-- Performance tab's Mutations dropdown (built later, in BUILD WINDOW).
+-- This was the actual crash: previously it only existed in one of those
+-- two places, so the other referenced a nil table and crashed the whole
+-- script while the UI was still being built.
+local KnownMutations = {"Shocked", "Volted", "Rage", "Void"}
 
 local currentSearch = ""
 local selectedEggs = Settings.SelectedEggs
@@ -310,6 +321,65 @@ local function setAutobuyItem(category, itemName, state)
 	GameRemotes:WaitForChild("Autobuy"):FireServer(category, itemName, state)
 end
 
+-- ============ PERFORMANCE HELPERS ============
+-- Optimization Mode / Ultra FPS Boost are generic client-side tricks
+-- (lower rendering quality, kill shadows/fog) - not guaranteed to match
+-- whatever the game's own low-graphics mode does internally, and some
+-- games lock or ignore these settings entirely. Harmless no-ops if so.
+local originalQuality = nil
+local function applyOptimizationMode(enabled)
+	local ok = pcall(function()
+		local gs = UserSettings():GetService("UserGameSettings")
+		if enabled then
+			if not originalQuality then originalQuality = gs.SavedQualityLevel end
+			gs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+		elseif originalQuality then
+			gs.SavedQualityLevel = originalQuality
+		end
+	end)
+	if not ok then
+		warn("[RideAPet] Could not change graphics quality on this executor/client.")
+	end
+end
+
+local function applyUltraFPSBoost(enabled)
+	pcall(function()
+		game:GetService("Lighting").GlobalShadows = not enabled
+		game:GetService("Lighting").FogEnd = enabled and 500 or 100000
+	end)
+end
+
+-- Only hides pets that exist at the moment you toggle this on - newly
+-- placed pets after that won't auto-hide unless a live watcher loop is
+-- added on top of this.
+local deletedPetParts = {}
+local function applyDeletePets(enabled)
+	if enabled then
+		local plots = workspace:FindFirstChild("Plots")
+		if plots then
+			for _, plot in ipairs(plots:GetChildren()) do
+				local pets = plot:FindFirstChild("Pets")
+				if pets then
+					for _, pet in ipairs(pets:GetChildren()) do
+						for _, part in ipairs(pet:GetDescendants()) do
+							if part:IsA("BasePart") or part:IsA("Decal") then
+								table.insert(deletedPetParts, { part, part.Transparency })
+								part.Transparency = 1
+							end
+						end
+					end
+				end
+			end
+		end
+	else
+		for _, entry in ipairs(deletedPetParts) do
+			local part, original = entry[1], entry[2]
+			if part and part.Parent then part.Transparency = original end
+		end
+		deletedPetParts = {}
+	end
+end
+
 -- Formats a raw number the way the game's own UI does (33.60T, 178M, etc.)
 -- instead of dumping a huge raw integer into the Discord embed.
 local NumberSuffixes = {
@@ -449,57 +519,6 @@ local function collectEggConfirmed(egg)
 		end
 	end
 	return false
-end
-
-local originalQuality = nil
-local function applyOptimizationMode(enabled)
-	local ok = pcall(function()
-		local gs = UserSettings():GetService("UserGameSettings")
-		if enabled then
-			if not originalQuality then originalQuality = gs.SavedQualityLevel end
-			gs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
-		elseif originalQuality then
-			gs.SavedQualityLevel = originalQuality
-		end
-	end)
-	if not ok then
-		warn("[RideAPet] Could not change graphics quality on this executor/client.")
-	end
-end
-
-local function applyUltraFPSBoost(enabled)
-	pcall(function()
-		game:GetService("Lighting").GlobalShadows = not enabled
-		game:GetService("Lighting").FogEnd = enabled and 500 or 100000
-	end)
-end
-
-local deletedPetParts = {}
-local function applyDeletePets(enabled)
-	if enabled then
-		local plots = workspace:FindFirstChild("Plots")
-		if plots then
-			for _, plot in ipairs(plots:GetChildren()) do
-				local pets = plot:FindFirstChild("Pets")
-				if pets then
-					for _, pet in ipairs(pets:GetChildren()) do
-						for _, part in ipairs(pet:GetDescendants()) do
-							if part:IsA("BasePart") or part:IsA("Decal") then
-								table.insert(deletedPetParts, { part, part.Transparency })
-								part.Transparency = 1
-							end
-						end
-					end
-				end
-			end
-		end
-	else
-		for _, entry in ipairs(deletedPetParts) do
-			local part, original = entry[1], entry[2]
-			if part and part.Parent then part.Transparency = original end
-		end
-		deletedPetParts = {}
-	end
 end
 
 -------------------------------------------------
@@ -779,7 +798,7 @@ local function postToDiscord(httpRequest, payload)
 	end
 
 	return true
-  end
+end
 
 -- isTest: when true, shows a UI notification with the send result (success/
 -- failure) instead of failing silently, and labels the embed as a test.
@@ -837,23 +856,30 @@ local function sendWebhook(isTest)
 	if avatarUrl then
 		embed.thumbnail = { url = avatarUrl }
 	end
-	
-    local content = nil
-    if Settings.WebhookMentionEveryone then
-	content = "@everyone"
-    elseif Settings.WebhookUserId ~= "" then
-	content = "<@" .. Settings.WebhookUserId .. ">"
-    end
-	
-	local payload = { embeds = { embed } }
-    if content then payload.content = content end
-    local sent, err = postToDiscord(httpRequest, payload)
 
-    if webhookStatusLabel then
-	webhookStatusLabel.Text = sent and "Status: Sent just now" or ("Status: Failed - " .. tostring(err))
-    end
-  end
-	
+	-- Optional @everyone or per-user ping alongside the embed.
+	local content = nil
+	if Settings.WebhookMentionEveryone then
+		content = "@everyone"
+	elseif Settings.WebhookUserId ~= "" then
+		content = "<@" .. Settings.WebhookUserId .. ">"
+	end
+
+	local payload = { embeds = { embed } }
+	if content then payload.content = content end
+
+	local sent, err = postToDiscord(httpRequest, payload)
+
+	if webhookStatusLabel then
+		webhookStatusLabel.Text = sent and "Status: Sent just now" or ("Status: Failed - " .. tostring(err))
+	end
+
+	if isTest then
+		window:Notify("Webhook", sent and "Test message sent!" or ("Failed: " .. tostring(err)), sent and 3 or 6)
+	elseif not sent then
+		warn("[RideAPet] Webhook send failed: " .. tostring(err))
+	end
+end
 
 -------------------------------------------------
 -- ESP (egg size labels)
@@ -874,8 +900,12 @@ local function getSizeLabel(egg)
 	else return "Small", Color3.fromRGB(170, 170, 180) end
 end
 
-local KnownMutations = {"Shocked", "Volted", "Rage", "Void"}
-
+-- Expanded filter: rarity (as before) + optional mutation-only, optional
+-- specific mutation selection, minimum weight, and a max render distance so
+-- ESP doesn't tag eggs you can't reasonably walk to anyway.
+-- Note: "Show Everyone" is saved in Settings but doesn't change behavior
+-- here yet - that requires confirming whether RenderedEggs is already
+-- global across plots or per-player before it can do anything real.
 local function isEggAllowed(egg)
 	if not enabledRarities[getEggRarity(egg.Name)] then return false end
 
@@ -974,6 +1004,10 @@ local automationTab = window:CreateTab("Automation")
 local eggTab = window:CreateTab("Egg")
 local otherTab = window:CreateTab("Other")
 local settingsTab = window:CreateTab("Settings")
+-- Declared here so it appears last in the sidebar in the right spot, but its
+-- widgets are built further down (after the Automation tab section), once
+-- eggNameToRarity actually exists - CreateTab itself only needs `window`.
+local performanceTab = window:CreateTab("Performance")
 
 -------------------------------------------------
 -- AUTOMATION TAB
@@ -1102,6 +1136,9 @@ window:AddSlider(movementCard, "Tween Speed (s)", 2, 12, Settings.TweenDuration,
 	saveSettings()
 end)
 
+-- "Egg ESP" toggle used to live here, but it's moved to the new Performance
+-- tab (alongside the ESP distance/mutation filters) so all ESP controls sit
+-- together instead of being split across two tabs.
 local additionalCard = window:CreateCard(eggLeft, "ADDITIONAL", true)
 window:AddToggle(additionalCard, "Auto Refresh", Settings.AutoRefreshEnabled, function(s)
 	autoRefreshEnabled = s
@@ -1205,9 +1242,42 @@ window:AddButton(serverCard, "Server Hop Now", Color3.fromRGB(255, 120, 30), fun
 end)
 
 -------------------------------------------------
--- PERFOMANCE TAB
+-- SETTINGS TAB
 -------------------------------------------------
-local performanceTab = window:CreateTab("PERFORMANCE")
+local webhookCard = window:CreateCard(settingsTab, "DISCORD WEBHOOK", true)
+window:AddToggle(webhookCard, "Enable Webhook", Settings.WebhookEnabled, function(s)
+	Settings.WebhookEnabled = s
+	saveSettings()
+end)
+window:AddTextbox(webhookCard, "Webhook URL", "https://discord.com/api/webhooks/...", Settings.WebhookURL, function(text)
+	Settings.WebhookURL = text
+	saveSettings()
+end)
+window:AddSlider(webhookCard, "Send Interval (minutes)", 5, 60, Settings.WebhookInterval, function(v)
+	Settings.WebhookInterval = v
+	saveSettings()
+end)
+window:AddButton(webhookCard, "Send Test Webhook", Color3.fromRGB(255, 140, 40), function()
+	sendWebhook(true)
+end)
+window:AddTextbox(webhookCard, "Discord User ID (ping)", "123456789012345678", Settings.WebhookUserId, function(text)
+	Settings.WebhookUserId = text
+	saveSettings()
+end)
+window:AddToggle(webhookCard, "Mention @everyone", Settings.WebhookMentionEveryone, function(s)
+	Settings.WebhookMentionEveryone = s
+	saveSettings()
+end)
+webhookStatusLabel = window:AddSectionLabel(webhookCard, "Status: Off")
+window:AddMultiSelectDropdown(webhookCard, "Track Backpack Items", allEggNames, Settings.TrackedBackpackItems, nil, function(name, state)
+	saveSettings()
+end)
+
+-------------------------------------------------
+-- PERFORMANCE TAB
+-------------------------------------------------
+-- Built here (after the Automation tab's eggNameToRarity loop above) since
+-- the Inventory Summary button below depends on it and on getPetKGFromName.
 local perfLeft, perfRight = window:CreateColumns(performanceTab, 0.48)
 
 local perfCard = window:CreateCard(perfLeft, "PERFORMANCE", true)
@@ -1227,6 +1297,9 @@ window:AddToggle(perfCard, "Delete Pets (FPS Boost)", Settings.DeletePetsEnabled
 	applyDeletePets(s)
 end)
 
+-- "Total KG + item counts" rather than a fabricated $/s value, since there's
+-- no confirmed formula for converting inventory into a money-per-second
+-- figure the way some other hubs display it.
 local invCard = window:CreateCard(perfLeft, "INVENTORY SUMMARY", true)
 local invPetsLabel = window:AddSectionLabel(invCard, "Pets: 0 | Total KG: 0")
 local invEggsLabel = window:AddSectionLabel(invCard, "Eggs: 0")
@@ -1262,6 +1335,9 @@ window:AddToggle(espCard, "Show Everyone (all plots)", Settings.ESPShowEveryone,
 	saveSettings()
 end)
 
+-- Shares the same Rarities list as Auto Farm's rarity filter rather than a
+-- fully separate one, to keep scope sane - the Mutations/weight filters
+-- below are the part that's actually independent from Auto Farm.
 local espFilterCard = window:CreateCard(perfRight, "EGG ESP FILTER", true)
 window:AddMultiSelectDropdown(espFilterCard, "Mutations", KnownMutations, Settings.ESPMutations, nil, function(name, state)
 	saveSettings()
@@ -1272,38 +1348,6 @@ window:AddToggle(espFilterCard, "Only Mutated", Settings.ESPOnlyMutated, functio
 end)
 window:AddSlider(espFilterCard, "Min Weight (raw units)", 0, 50, Settings.ESPMinWeight, function(v)
 	Settings.ESPMinWeight = v
-	saveSettings()
-end)
-
--------------------------------------------------
--- SETTINGS TAB
--------------------------------------------------
-local webhookCard = window:CreateCard(settingsTab, "DISCORD WEBHOOK", true)
-window:AddToggle(webhookCard, "Enable Webhook", Settings.WebhookEnabled, function(s)
-	Settings.WebhookEnabled = s
-	saveSettings()
-end)
-window:AddTextbox(webhookCard, "Webhook URL", "https://discord.com/api/webhooks/...", Settings.WebhookURL, function(text)
-	Settings.WebhookURL = text
-	saveSettings()
-end)
-window:AddTextbox(webhookCard, "Discord User ID (ping)", "123456789012345678", Settings.WebhookUserId, function(text)
-	Settings.WebhookUserId = text
-	saveSettings()
-end)
-window:AddToggle(webhookCard, "Mention @everyone", Settings.WebhookMentionEveryone, function(s)
-	Settings.WebhookMentionEveryone = s
-	saveSettings()
-end)
-webhookStatusLabel = window:AddSectionLabel(webhookCard, "Status: Off")
-window:AddSlider(webhookCard, "Send Interval (minutes)", 5, 60, Settings.WebhookInterval, function(v)
-	Settings.WebhookInterval = v
-	saveSettings()
-end)
-window:AddButton(webhookCard, "Send Test Webhook", Color3.fromRGB(255, 140, 40), function()
-	sendWebhook(true)
-end)
-window:AddMultiSelectDropdown(webhookCard, "Track Backpack Items", allEggNames, Settings.TrackedBackpackItems, nil, function(name, state)
 	saveSettings()
 end)
 
