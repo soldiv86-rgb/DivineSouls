@@ -30,6 +30,17 @@ local function stroke(inst, color, thickness, transparency)
 	return s
 end
 
+-- pcall-wraps user callbacks so a mistake inside one (e.g. an AddButton
+-- click handler) can't throw an uncaught error into the middle of a UI
+-- event connection. Silently a no-op when fn is nil.
+local function safeCall(fn, ...)
+	if not fn then return end
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		warn("[UI] callback error: " .. tostring(err))
+	end
+end
+
 -- Tracks a connection on `self` so UI:Destroy() can clean it up later.
 -- UserInputService connections are NOT tied to instance lifetime - simply
 -- destroying the UI's Frames does not disconnect them, so every widget
@@ -123,18 +134,27 @@ local function bindHorizontalDrag(self, track_, knob, onDrag)
 end
 
 -- ============ WINDOW ============
-function UI.new(title, subtitle)
+-- guiName lets you run multiple independent UIs in the same session (e.g.
+-- separate main.lua files for different games/hubs) without one destroying
+-- the other's ScreenGui. Give each one its own guiName - if you leave it
+-- out, it defaults to "ScriptHubUI_<title>" so UIs with different titles
+-- won't collide, but two UIs with the SAME title still would; pass an
+-- explicit unique guiName if that's a concern for you.
+function UI.new(title, subtitle, guiName)
 	local self = setmetatable({}, UI)
 	self.Tabs = {}
 	self.TabButtons = {}
 	self._connections = {} -- every UserInputService connection created by this UI, for Destroy()
 
-	if playerGui:FindFirstChild("ScriptHubUI") then
-		playerGui.ScriptHubUI:Destroy()
+	local resolvedName = guiName or ("ScriptHubUI_" .. tostring(title or "Default"))
+	self._guiName = resolvedName
+
+	if playerGui:FindFirstChild(resolvedName) then
+		playerGui[resolvedName]:Destroy()
 	end
 
 	self.ScreenGui = Instance.new("ScreenGui")
-	self.ScreenGui.Name = "ScriptHubUI"
+	self.ScreenGui.Name = resolvedName
 	self.ScreenGui.ResetOnSpawn = false
 	self.ScreenGui.Parent = playerGui
 
@@ -551,7 +571,7 @@ function UI:AddToggle(parent, text, default, callback)
 		TweenService:Create(knob, TweenInfo.new(0.18), {
 			Position = state and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
 		}):Play()
-		if callback then callback(state) end
+		safeCall(callback, state)
 	end)
 	return frame, function() return state end
 end
@@ -619,7 +639,7 @@ function UI:AddSlider(parent, label, minV, maxV, default, callback)
 		fill.Size = UDim2.new(a, 0, 1, 0)
 		knob.Position = UDim2.new(a, -6, 0.5, -6)
 		box.Text = tostring(val)
-		if callback then callback(val) end
+		safeCall(callback, val)
 	end
 
 	bindHorizontalDrag(self, sliderTrack, knob, function(a)
@@ -703,7 +723,7 @@ function UI:AddDropdown(parent, label, options, default, onChange)
 			boxText.Text = name
 			setOpen(false)
 			refreshHighlight()
-			if onChange then onChange(current) end
+			safeCall(onChange, current)
 		end)
 	end
 	refreshHighlight()
@@ -816,7 +836,7 @@ function UI:AddMultiSelectDropdown(parent, label, options, selectedSet, colorFor
 					selectedSet[name] = not selectedSet[name]
 					bar.Visible = selectedSet[name] == true
 					updateBoxText()
-					if onChange then onChange(name, selectedSet[name], selectedSet) end
+					safeCall(onChange, name, selectedSet[name], selectedSet)
 				end)
 
 				table.insert(rows, row)
@@ -900,7 +920,7 @@ function UI:AddKeybind(parent, text, default, callback)
 			end
 			keyBtn.BackgroundColor3 = Color3.fromRGB(40, 35, 30)
 			listening = false
-			if callback then callback(currentKey) end
+			safeCall(callback, currentKey)
 		end
 	end))
 
@@ -947,7 +967,7 @@ function UI:AddColorPicker(parent, label, default, callback)
 	local function updateColor()
 		currentColor = Color3.fromRGB(r, g, b)
 		swatch.BackgroundColor3 = currentColor
-		if callback then callback(currentColor) end
+		safeCall(callback, currentColor)
 	end
 
 	local function buildChannel(yPos, channelName, initial, setFn)
@@ -1064,7 +1084,7 @@ function UI:AddTextbox(parent, label, placeholder, default, callback)
 	corner(box, 6)
 
 	box.FocusLost:Connect(function(enterPressed)
-		if callback then callback(box.Text, enterPressed) end
+		safeCall(callback, box.Text, enterPressed)
 	end)
 
 	return frame, function() return box.Text end
@@ -1106,7 +1126,7 @@ function UI:AddButton(parent, text, color, callback)
 		TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = color}):Play()
 	end)
 	btn.MouseButton1Click:Connect(function()
-		if callback then callback() end
+		safeCall(callback)
 	end)
 	return btn
 end
@@ -1153,7 +1173,7 @@ function UI:AddMethodSelector(parent, labelText, options, currentValue, onChange
 			for name, btn in pairs(buttons) do
 				btn.BackgroundColor3 = (name == currentValue) and ACCENT or Color3.fromRGB(40, 35, 30)
 			end
-			onChange(optName)
+			safeCall(onChange, optName)
 		end)
 	end
 
