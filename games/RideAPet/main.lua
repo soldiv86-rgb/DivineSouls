@@ -300,12 +300,36 @@ local function setAutobuyItem(category, itemName, state)
 	GameRemotes:WaitForChild("Autobuy"):FireServer(category, itemName, state)
 end
 
+-- Formats a raw number the way the game's own UI does (33.60T, 178M, etc.)
+-- instead of dumping a huge raw integer into the Discord embed.
+local NumberSuffixes = {
+	{ 1e33, "D"  }, { 1e30, "N"  }, { 1e27, "O"  }, { 1e24, "Sp" },
+	{ 1e21, "Sx" }, { 1e18, "Qi" }, { 1e15, "Qa" }, { 1e12, "T"  },
+	{ 1e9,  "B"  }, { 1e6,  "M"  }, { 1e3,  "K"  },
+}
+local function formatNumber(n)
+	if type(n) ~= "number" then return tostring(n) end
+	local sign = n < 0 and "-" or ""
+	n = math.abs(n)
+	for _, entry in ipairs(NumberSuffixes) do
+		local threshold, suffix = entry[1], entry[2]
+		if n >= threshold then
+			return sign .. string.format("%.2f%s", n / threshold, suffix)
+		end
+	end
+	return sign .. tostring(n)
+end
+
 local function getMoneyStats()
-	local currencies = playerGui:FindFirstChild("Reusable") and playerGui.Reusable:FindFirstChild("Currencies")
-	if not currencies then return "N/A", "N/A" end
-	local cash = currencies:FindFirstChild("CashAmount")
-	local income = currencies:FindFirstChild("CashIncome")
-	return cash and cash.Text or "N/A", income and income.Text or "N/A"
+	local leaderstats = player:FindFirstChild("leaderstats")
+	local incomeValue = leaderstats and leaderstats:FindFirstChild("Income/s")
+
+	local savedData = player:FindFirstChild("SavedData")
+	local cashValue = savedData and savedData:FindFirstChild("Cash")
+
+	local cash = cashValue and formatNumber(cashValue.Value) or "N/A"
+	local income = incomeValue and formatNumber(incomeValue.Value) or "N/A"
+	return cash, income
 end
 
 local function countBackpackItem(itemName)
@@ -316,21 +340,6 @@ local function countBackpackItem(itemName)
 		if tool.Name == itemName then count += 1 end
 	end
 	return count
-end
-
--- Scans the backpack for the highest-KG pet currently held, for the webhook embed.
-local function getBiggestPet()
-	local backpack = player:FindFirstChild("Backpack")
-	if not backpack then return "N/A" end
-	local bestName, bestKG = nil, -1
-	for _, tool in ipairs(backpack:GetChildren()) do
-		local kg = getPetKGFromName(tool.Name)
-		if kg and kg > bestKG then
-			bestKG = kg
-			bestName = tool.Name
-		end
-	end
-	return bestName or "N/A"
 end
 
 -- Builds a clean comma-separated list of which automations are currently on.
@@ -756,7 +765,6 @@ local function sendWebhook(isTest)
 			{ name = "Money / sec", value = tostring(moneyPerSec), inline = true },
 			{ name = "Auto Farm", value = autoFarmEnabled and ("Running (" .. eggsCollected .. " eggs collected)") or "Off", inline = true },
 			{ name = "Last Egg Rarity", value = lastCollectedRarity, inline = true },
-			{ name = "Biggest Pet", value = getBiggestPet(), inline = true },
 			{ name = "Active Automations", value = getActiveAutomations(), inline = false },
 			{ name = "Tracked Backpack Items", value = trackedText, inline = false },
 		},
