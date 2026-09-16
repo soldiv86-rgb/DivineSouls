@@ -852,6 +852,8 @@ local function sendWebhook(isTest)
     if webhookStatusLabel then
 	webhookStatusLabel.Text = sent and "Status: Sent just now" or ("Status: Failed - " .. tostring(err))
     end
+  end
+end
 	
 
 -------------------------------------------------
