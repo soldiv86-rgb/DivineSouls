@@ -15,6 +15,11 @@ local UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/soldiv86-r
 
 local GameRemotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Game")
 
+-- Forward-declared so functions defined earlier in the file (like
+-- sendWebhook, which calls window:Notify) close over this local instead of
+-- silently resolving to a nil global "window" that doesn't exist yet.
+local window
+
 -------------------------------------------------
 -- SETTINGS
 -------------------------------------------------
@@ -815,7 +820,7 @@ end)
 -------------------------------------------------
 -- BUILD WINDOW
 -------------------------------------------------
-local window = UI.new("Divine Souls", "Script Hub")
+window = UI.new("Divine Souls", "Ride A Pet")
 
 local automationTab = window:CreateTab("Automation")
 local eggTab = window:CreateTab("Egg")
@@ -1072,7 +1077,7 @@ window:AddSlider(webhookCard, "Send Interval (minutes)", 5, 60, Settings.Webhook
 	Settings.WebhookInterval = v
 	saveSettings()
 end)
-window:AddButton(webhookCard, "Send Test Webhook", Color3.fromRGB(88, 101, 242), function()
+window:AddButton(webhookCard, "Send Test Webhook", Color3.fromRGB(255, 140, 40), function()
 	sendWebhook(true)
 end)
 window:AddMultiSelectDropdown(webhookCard, "Track Backpack Items", allEggNames, Settings.TrackedBackpackItems, nil, function(name, state)
