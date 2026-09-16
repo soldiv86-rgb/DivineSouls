@@ -25,10 +25,10 @@ local Settings = {
 	MultiStepSteps = 14,
 	AutoRefreshInterval = 3,
 	AutoFarmEnabled = false,
-	AutoFarmDelay = 1.2,
-	CollectHoldTime = 0.75,
+	AutoFarmDelay = 4,
+	CollectHoldTime = 1,
 	GoMethod = "MultiTeleport",
-	ReturnMethod = "Tween",
+	ReturnMethod = "MultiTeleport",
 	AutoPlaceBestPet = false,
 	AutoFeed = false,
 	DesiredAge = 50,
@@ -41,7 +41,7 @@ local Settings = {
 	TrackShopSelected = {},
 	WebhookEnabled = false,
 	WebhookURL = "",
-	WebhookInterval = 15,
+	WebhookInterval = 5,
 	TrackedBackpackItems = {},
 	ESPEnabled = true,
 	AutoRefreshEnabled = false,
@@ -692,7 +692,7 @@ end)
 -------------------------------------------------
 -- BUILD WINDOW
 -------------------------------------------------
-local window = UI.new("Ride A Pet", "Script Hub")
+local window = UI.new("Divine Souls", "Script Hub")
 
 local automationTab = window:CreateTab("Automation")
 local eggTab = window:CreateTab("Egg")
