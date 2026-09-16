@@ -353,6 +353,65 @@ local function getAvatarThumbnail()
 	return nil
 end
 
+-- Returns the actual BasePart holding the egg's ProximityPrompt (and the
+-- prompt itself), rather than the egg model as a whole. Large eggs can have
+-- their interactive part sitting well away from the model's overall pivot.
+local function getEggInteractPart(egg)
+	local prompt = egg:FindFirstChildWhichIsA("ProximityPrompt", true)
+	if prompt then
+		return prompt.Parent, prompt
+	end
+	return egg:FindFirstChild("EggBase") or egg.PrimaryPart or egg:FindFirstChildWhichIsA("BasePart"), nil
+end
+
+-- goToTarget lands the character at the egg's pivot + 5 studs up, which is
+-- fine for small/medium eggs but can leave HUGE eggs' prompts out of range,
+-- since the pivot is the geometric center, not necessarily where the prompt
+-- part sits. This snaps the character next to the real prompt part using
+-- its own MaxActivationDistance, so it self-adjusts to any egg size.
+local function ensureInRangeOfEgg(egg)
+	local hrp = getHRP()
+	if not hrp then return end
+	local part, prompt = getEggInteractPart(egg)
+	if not part or not part:IsA("BasePart") then return end
+
+	local maxDist = (prompt and prompt.MaxActivationDistance) or 10
+	local dist = (hrp.Position - part.Position).Magnitude
+	if dist <= maxDist * 0.7 then return end -- already comfortably in range
+
+	local direction = hrp.Position - part.Position
+	if direction.Magnitude < 0.1 then
+		direction = Vector3.new(0, 0, 1)
+	end
+	direction = direction.Unit
+
+	local standoff = math.max(maxDist * 0.5, 3)
+	local targetPos = part.Position + direction * standoff + Vector3.new(0, part.Size.Y / 2 + 2, 0)
+	hrp.CFrame = CFrame.new(targetPos)
+	task.wait(0.15)
+end
+
+-- Confirms the egg actually landed in the backpack before counting it,
+-- instead of assuming the hold-to-collect input succeeded. Watches for the
+-- backpack count of that egg name to tick up; falls back to "the egg
+-- disappeared from workspace" as a secondary success signal, in case some
+-- eggs route into a different reward instead of a same-named backpack tool.
+local function collectEggConfirmed(egg)
+	local countBefore = countBackpackItem(egg.Name)
+	collectEgg(egg)
+
+	for _ = 1, 10 do
+		task.wait(0.15)
+		if countBackpackItem(egg.Name) > countBefore then
+			return true
+		end
+		if not egg.Parent then
+			return true
+		end
+	end
+	return false
+end
+
 -------------------------------------------------
 -- STATUS PANEL (floating overlay, shown while Auto Farm runs)
 -------------------------------------------------
@@ -467,12 +526,14 @@ local function startAutoFarm()
 				updateStatusPanel()
 				goToTarget(egg)
 				task.wait(0.25)
+				ensureInRangeOfEgg(egg)
 				currentAction = "Holding to collect"
 				updateStatusPanel()
-				collectEgg(egg)
-				task.wait(0.2)
-				eggsCollected += 1
-				lastCollectedRarity = rarity
+				local collected = collectEggConfirmed(egg)
+				if collected then
+					eggsCollected += 1
+					lastCollectedRarity = rarity
+				end
 				currentAction = "Returning to base"
 				updateStatusPanel()
 				returnToBase()
