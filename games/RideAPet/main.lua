@@ -44,8 +44,18 @@ local Settings = {
 	AutoBuy = false,
 	FoodShopSelected = {},
 	TrackShopSelected = {},
+	DeletePetsEnabled = false,
+    OptimizationMode = false,
+    UltraFPSBoost = false,
+    ESPMaxDistance = 1200,
+    ESPShowEveryone = false,
+    ESPMutations = {},
+    ESPOnlyMutated = false,
+    ESPMinWeight = 0,
+    WebhookMentionEveryone = false,
 	WebhookEnabled = false,
 	WebhookURL = "",
+	WebhookUserId = "",
 	WebhookInterval = 5,
 	TrackedBackpackItems = {},
 	ESPEnabled = true,
@@ -441,6 +451,57 @@ local function collectEggConfirmed(egg)
 	return false
 end
 
+local originalQuality = nil
+local function applyOptimizationMode(enabled)
+	local ok = pcall(function()
+		local gs = UserSettings():GetService("UserGameSettings")
+		if enabled then
+			if not originalQuality then originalQuality = gs.SavedQualityLevel end
+			gs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+		elseif originalQuality then
+			gs.SavedQualityLevel = originalQuality
+		end
+	end)
+	if not ok then
+		warn("[RideAPet] Could not change graphics quality on this executor/client.")
+	end
+end
+
+local function applyUltraFPSBoost(enabled)
+	pcall(function()
+		game:GetService("Lighting").GlobalShadows = not enabled
+		game:GetService("Lighting").FogEnd = enabled and 500 or 100000
+	end)
+end
+
+local deletedPetParts = {}
+local function applyDeletePets(enabled)
+	if enabled then
+		local plots = workspace:FindFirstChild("Plots")
+		if plots then
+			for _, plot in ipairs(plots:GetChildren()) do
+				local pets = plot:FindFirstChild("Pets")
+				if pets then
+					for _, pet in ipairs(pets:GetChildren()) do
+						for _, part in ipairs(pet:GetDescendants()) do
+							if part:IsA("BasePart") or part:IsA("Decal") then
+								table.insert(deletedPetParts, { part, part.Transparency })
+								part.Transparency = 1
+							end
+						end
+					end
+				end
+			end
+		end
+	else
+		for _, entry in ipairs(deletedPetParts) do
+			local part, original = entry[1], entry[2]
+			if part and part.Parent then part.Transparency = original end
+		end
+		deletedPetParts = {}
+	end
+end
+
 -------------------------------------------------
 -- STATUS PANEL (floating overlay, shown while Auto Farm runs)
 -------------------------------------------------
@@ -776,15 +837,22 @@ local function sendWebhook(isTest)
 	if avatarUrl then
 		embed.thumbnail = { url = avatarUrl }
 	end
+	
+    local content = nil
+    if Settings.WebhookMentionEveryone then
+	content = "@everyone"
+    elseif Settings.WebhookUserId ~= "" then
+	content = "<@" .. Settings.WebhookUserId .. ">"
+    end
+	
+	local payload = { embeds = { embed } }
+    if content then payload.content = content end
+    local sent, err = postToDiscord(httpRequest, payload)
 
-	local sent, err = postToDiscord(httpRequest, { embeds = { embed } })
-
-	if isTest then
-		window:Notify("Webhook", sent and "Test message sent!" or ("Failed: " .. tostring(err)), sent and 3 or 6)
-	elseif not sent then
-		warn("[RideAPet] Webhook send failed: " .. tostring(err))
-	end
-end
+    if webhookStatusLabel then
+	webhookStatusLabel.Text = sent and "Status: Sent just now" or ("Status: Failed - " .. tostring(err))
+    end
+	
 
 -------------------------------------------------
 -- ESP (egg size labels)
@@ -805,8 +873,40 @@ local function getSizeLabel(egg)
 	else return "Small", Color3.fromRGB(170, 170, 180) end
 end
 
+local KnownMutations = {"Shocked", "Volted", "Rage", "Void"}
+
 local function isEggAllowed(egg)
-	return enabledRarities[getEggRarity(egg.Name)] == true
+	if not enabledRarities[getEggRarity(egg.Name)] then return false end
+
+	if Settings.ESPOnlyMutated then
+		local mutation = egg:GetAttribute("Mutation")
+		if not mutation or mutation == "" then return false end
+	end
+
+	local anyMutationSelected = false
+	for _, sel in pairs(Settings.ESPMutations) do
+		if sel then anyMutationSelected = true break end
+	end
+	if anyMutationSelected then
+		local mutation = egg:GetAttribute("Mutation")
+		if not mutation or not Settings.ESPMutations[mutation] then return false end
+	end
+
+	if Settings.ESPMinWeight > 0 then
+		local weight = egg:GetAttribute("Weight") or 0
+		if weight < Settings.ESPMinWeight then return false end
+	end
+
+	if Settings.ESPMaxDistance and Settings.ESPMaxDistance > 0 then
+		local hrp = getHRP()
+		local part = egg:FindFirstChild("EggBase") or egg.PrimaryPart or egg:FindFirstChildWhichIsA("BasePart")
+		if hrp and part then
+			local dist = (hrp.Position - part.Position).Magnitude
+			if dist > Settings.ESPMaxDistance then return false end
+		end
+	end
+
+	return true
 end
 
 local function createESP(egg)
@@ -1007,11 +1107,6 @@ window:AddToggle(additionalCard, "Auto Refresh", Settings.AutoRefreshEnabled, fu
 	Settings.AutoRefreshEnabled = s
 	saveSettings()
 end)
-window:AddToggle(additionalCard, "Egg ESP", Settings.ESPEnabled, function(s)
-	espEnabled = s
-	Settings.ESPEnabled = s
-	saveSettings()
-end)
 
 local eggListCard = window:CreateCard(eggRight, "EGG LIST", true)
 window:AddMultiSelectDropdown(eggListCard, "Rarities", Rarities, enabledRarities,
@@ -1109,6 +1204,77 @@ window:AddButton(serverCard, "Server Hop Now", Color3.fromRGB(255, 120, 30), fun
 end)
 
 -------------------------------------------------
+-- PERFOMANCE TAB
+-------------------------------------------------
+local performanceTab = window:CreateTab("PERFORMANCE")
+local perfLeft, perfRight = window:CreateColumns(performanceTab, 0.48)
+
+local perfCard = window:CreateCard(perfLeft, "PERFORMANCE", true)
+window:AddToggle(perfCard, "Optimization Mode (rejoin to undo)", Settings.OptimizationMode, function(s)
+	Settings.OptimizationMode = s
+	saveSettings()
+	applyOptimizationMode(s)
+end)
+window:AddToggle(perfCard, "Ultra FPS Boost", Settings.UltraFPSBoost, function(s)
+	Settings.UltraFPSBoost = s
+	saveSettings()
+	applyUltraFPSBoost(s)
+end)
+window:AddToggle(perfCard, "Delete Pets (FPS Boost)", Settings.DeletePetsEnabled, function(s)
+	Settings.DeletePetsEnabled = s
+	saveSettings()
+	applyDeletePets(s)
+end)
+
+local invCard = window:CreateCard(perfLeft, "INVENTORY SUMMARY", true)
+local invPetsLabel = window:AddSectionLabel(invCard, "Pets: 0 | Total KG: 0")
+local invEggsLabel = window:AddSectionLabel(invCard, "Eggs: 0")
+window:AddButton(invCard, "Refresh Summary", Color3.fromRGB(255, 140, 40), function()
+	local backpack = player:FindFirstChild("Backpack")
+	if not backpack then return end
+	local petCount, totalKG, eggCount = 0, 0, 0
+	for _, tool in ipairs(backpack:GetChildren()) do
+		local kg = getPetKGFromName(tool.Name)
+		if kg then
+			petCount += 1
+			totalKG += kg
+		elseif eggNameToRarity[tool.Name] then
+			eggCount += 1
+		end
+	end
+	invPetsLabel.Text = string.format("Pets: %d | Total KG: %s", petCount, formatNumber(totalKG))
+	invEggsLabel.Text = string.format("Eggs: %d", eggCount)
+end)
+
+local espCard = window:CreateCard(perfRight, "EGG ESP", true)
+window:AddToggle(espCard, "Egg ESP", Settings.ESPEnabled, function(s)
+	espEnabled = s
+	Settings.ESPEnabled = s
+	saveSettings()
+end)
+window:AddSlider(espCard, "Max Distance (studs)", 100, 3000, Settings.ESPMaxDistance, function(v)
+	Settings.ESPMaxDistance = v
+	saveSettings()
+end)
+window:AddToggle(espCard, "Show Everyone (all plots)", Settings.ESPShowEveryone, function(s)
+	Settings.ESPShowEveryone = s
+	saveSettings()
+end)
+
+local espFilterCard = window:CreateCard(perfRight, "EGG ESP FILTER", true)
+window:AddMultiSelectDropdown(espFilterCard, "Mutations", KnownMutations, Settings.ESPMutations, nil, function(name, state)
+	saveSettings()
+end)
+window:AddToggle(espFilterCard, "Only Mutated", Settings.ESPOnlyMutated, function(s)
+	Settings.ESPOnlyMutated = s
+	saveSettings()
+end)
+window:AddSlider(espFilterCard, "Min Weight (raw units)", 0, 50, Settings.ESPMinWeight, function(v)
+	Settings.ESPMinWeight = v
+	saveSettings()
+end)
+
+-------------------------------------------------
 -- SETTINGS TAB
 -------------------------------------------------
 local webhookCard = window:CreateCard(settingsTab, "DISCORD WEBHOOK", true)
@@ -1120,6 +1286,15 @@ window:AddTextbox(webhookCard, "Webhook URL", "https://discord.com/api/webhooks/
 	Settings.WebhookURL = text
 	saveSettings()
 end)
+window:AddTextbox(webhookCard, "Discord User ID (ping)", "123456789012345678", Settings.WebhookUserId, function(text)
+	Settings.WebhookUserId = text
+	saveSettings()
+end)
+window:AddToggle(webhookCard, "Mention @everyone", Settings.WebhookMentionEveryone, function(s)
+	Settings.WebhookMentionEveryone = s
+	saveSettings()
+end)
+webhookStatusLabel = window:AddSectionLabel(webhookCard, "Status: Off")
 window:AddSlider(webhookCard, "Send Interval (minutes)", 5, 60, Settings.WebhookInterval, function(v)
 	Settings.WebhookInterval = v
 	saveSettings()
