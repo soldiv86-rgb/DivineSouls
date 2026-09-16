@@ -313,6 +313,46 @@ local function countBackpackItem(itemName)
 	return count
 end
 
+-- Scans the backpack for the highest-KG pet currently held, for the webhook embed.
+local function getBiggestPet()
+	local backpack = player:FindFirstChild("Backpack")
+	if not backpack then return "N/A" end
+	local bestName, bestKG = nil, -1
+	for _, tool in ipairs(backpack:GetChildren()) do
+		local kg = getPetKGFromName(tool.Name)
+		if kg and kg > bestKG then
+			bestKG = kg
+			bestName = tool.Name
+		end
+	end
+	return bestName or "N/A"
+end
+
+-- Builds a clean comma-separated list of which automations are currently on.
+-- Avoids the nil-hole array issue you'd get from table.concat on a sparse table.
+local function getActiveAutomations()
+	local active = {}
+	if autoFarmEnabled then table.insert(active, "Auto Farm") end
+	if Settings.AutoFeed then table.insert(active, "Auto Feed") end
+	if Settings.AutoHatch then table.insert(active, "Auto Hatch") end
+	if Settings.AutoPlaceBestPet then table.insert(active, "Auto Place Pet") end
+	if Settings.AutoPlaceEgg then table.insert(active, "Auto Place Egg") end
+	if Settings.AutoBuy then table.insert(active, "Auto Buy") end
+	if autoRefreshEnabled then table.insert(active, "Auto Refresh") end
+	if #active == 0 then return "None" end
+	return table.concat(active, ", ")
+end
+
+-- Fetches the player's headshot thumbnail for the webhook embed. Returns nil
+-- (rather than throwing) if the thumbnail service call fails for any reason.
+local function getAvatarThumbnail()
+	local ok, url = pcall(function()
+		return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+	end)
+	if ok then return url end
+	return nil
+end
+
 -------------------------------------------------
 -- STATUS PANEL (floating overlay, shown while Auto Farm runs)
 -------------------------------------------------
@@ -559,12 +599,18 @@ end
 -------------------------------------------------
 -- WEBHOOK
 -------------------------------------------------
-local function sendWebhook()
-	if Settings.WebhookURL == "" then return end
+-- isTest: when true, shows a UI notification with the send result (success/
+-- failure) instead of failing silently, and labels the embed as a test.
+local function sendWebhook(isTest)
+	if Settings.WebhookURL == "" then
+		if isTest then window:Notify("Webhook", "No webhook URL set.", 3) end
+		return
+	end
 
 	local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
 	if not httpRequest then
 		warn("[RideAPet] No HTTP request function available in this executor - webhook can't send.")
+		if isTest then window:Notify("Webhook", "No HTTP request function available in this executor.", 4) end
 		return
 	end
 
@@ -584,24 +630,36 @@ local function sendWebhook()
 	end
 	local trackedText = #trackedLines > 0 and table.concat(trackedLines, "\n") or "None selected"
 
-	local payload = {
-		embeds = {
-			{
-				title = "Ride A Pet - Status Update",
-				color = 16750632,
-				fields = {
-					{ name = "Uptime", value = uptimeStr, inline = true },
-					{ name = "Total Money", value = tostring(totalMoney), inline = true },
-					{ name = "Money / sec", value = tostring(moneyPerSec), inline = true },
-					{ name = "Luck", value = "N/A", inline = true },
-					{ name = "Tracked Backpack Items", value = trackedText, inline = false },
-				},
-				timestamp = DateTime.now():ToIsoDate(),
-			}
-		}
+	local avatarUrl = getAvatarThumbnail()
+	-- Orange while Auto Farm is running, grey when idle, so status is visible
+	-- in Discord at a glance without opening the message.
+	local embedColor = autoFarmEnabled and 16750632 or 10066329
+
+	local embed = {
+		title = isTest and "Ride A Pet - Test Webhook" or "Ride A Pet - Status Update",
+		color = embedColor,
+		fields = {
+			{ name = "Uptime", value = uptimeStr, inline = true },
+			{ name = "Total Money", value = tostring(totalMoney), inline = true },
+			{ name = "Money / sec", value = tostring(moneyPerSec), inline = true },
+			{ name = "Auto Farm", value = autoFarmEnabled and ("Running (" .. eggsCollected .. " eggs collected)") or "Off", inline = true },
+			{ name = "Last Egg Rarity", value = lastCollectedRarity, inline = true },
+			{ name = "Biggest Pet", value = getBiggestPet(), inline = true },
+			{ name = "Active Automations", value = getActiveAutomations(), inline = false },
+			{ name = "Tracked Backpack Items", value = trackedText, inline = false },
+		},
+		author = { name = player.Name },
+		footer = { text = "Ride A Pet - Divine Souls Hub" },
+		timestamp = DateTime.now():ToIsoDate(),
 	}
 
-	pcall(function()
+	if avatarUrl then
+		embed.thumbnail = { url = avatarUrl }
+	end
+
+	local payload = { embeds = { embed } }
+
+	local ok = pcall(function()
 		httpRequest({
 			Url = Settings.WebhookURL,
 			Method = "POST",
@@ -609,6 +667,10 @@ local function sendWebhook()
 			Body = HttpService:JSONEncode(payload),
 		})
 	end)
+
+	if isTest then
+		window:Notify("Webhook", ok and "Test message sent!" or "Failed to send - check the URL.", 3)
+	end
 end
 
 -------------------------------------------------
@@ -949,6 +1011,9 @@ window:AddSlider(webhookCard, "Send Interval (minutes)", 5, 60, Settings.Webhook
 	Settings.WebhookInterval = v
 	saveSettings()
 end)
+window:AddButton(webhookCard, "Send Test Webhook", Color3.fromRGB(88, 101, 242), function()
+	sendWebhook(true)
+end)
 window:AddMultiSelectDropdown(webhookCard, "Track Backpack Items", allEggNames, Settings.TrackedBackpackItems, nil, function(name, state)
 	saveSettings()
 end)
@@ -964,11 +1029,16 @@ task.spawn(function()
 	end
 end)
 
+-- Polls every second instead of one long task.wait(interval * 60), so
+-- dragging the "Send Interval" slider takes effect almost immediately
+-- instead of only applying after the current wait finishes.
 task.spawn(function()
+	local lastSent = os.clock()
 	while true do
-		task.wait(Settings.WebhookInterval * 60)
-		if Settings.WebhookEnabled then
+		task.wait(1)
+		if Settings.WebhookEnabled and (os.clock() - lastSent) >= (Settings.WebhookInterval * 60) then
 			sendWebhook()
+			lastSent = os.clock()
 		end
 	end
 end)
