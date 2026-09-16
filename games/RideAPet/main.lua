@@ -37,9 +37,12 @@ local Settings = {
 	MinEggKG = 30000,
 	SelectedEggs = {},
 	AutoBuy = false,
+	FoodShopSelected = {},
+	TrackShopSelected = {},
 	WebhookEnabled = false,
 	WebhookURL = "",
 	WebhookInterval = 15,
+	TrackedBackpackItems = {},
 	ESPEnabled = true,
 	AutoRefreshEnabled = false,
 	EnabledRarities = {
@@ -98,15 +101,14 @@ local RarityEggs = {
 	Common = { "Brown Egg", "White Egg" },
 }
 
--- Every known shop item, by category, for the Autobuy remote
-local AutobuyItems = {
-	{"Gears", "Royal Radar"}, {"Gears", "Magic Radar"}, {"Gears", "Advanced Radar"}, {"Gears", "Angelic Radar"},
-	{"Food", "Grass"}, {"Food", "Bone"}, {"Food", "Magic Apple"}, {"Food", "Meat"}, {"Food", "Dragonfruit"},
-}
+local FoodShopItems = {"Grass", "Bone", "Magic Apple", "Meat", "Dragonfruit"}
+local TrackShopItems = {"Royal Radar", "Magic Radar", "Advanced Radar", "Angelic Radar"}
 
 local currentSearch = ""
-local selectedEggs = Settings.SelectedEggs or {}
+local selectedEggs = Settings.SelectedEggs
 local enabledRarities = Settings.EnabledRarities
+local foodShopSelected = Settings.FoodShopSelected
+local trackShopSelected = Settings.TrackShopSelected
 local eggButtons = {}
 local espObjects = {}
 local espEnabled = Settings.ESPEnabled
@@ -114,7 +116,6 @@ local autoRefreshEnabled = Settings.AutoRefreshEnabled
 local goMethod = Settings.GoMethod
 local returnMethod = Settings.ReturnMethod
 
--- Auto Farm state
 local autoFarmEnabled = Settings.AutoFarmEnabled
 local autoFarmRunning = false
 local farmStartTime = 0
@@ -122,6 +123,8 @@ local eggsCollected = 0
 local lastCollectedRarity = "-"
 local currentAction = "Idle"
 local currentTarget = "-"
+
+local scriptStartTime = os.clock()
 
 -------------------------------------------------
 -- HELPERS
@@ -132,8 +135,6 @@ local function getHRP()
 	return character:FindFirstChild("HumanoidRootPart")
 end
 
--- Returns the Plot MODEL owned by this player (not just the Baseplate part),
--- since Auto Feed/Hatch/Place need to reach into Plot.Pets/Eggs/Nests too.
 local function getOwnedPlot()
 	local plots = workspace:FindFirstChild("Plots")
 	if not plots then return nil end
@@ -154,8 +155,6 @@ local function getOwnedPlot()
 	return nil
 end
 
--- Dynamically finds the plot owned by this player, instead of a hardcoded path.
--- Falls back to the fixed path if dynamic lookup doesn't find anything.
 local function getBase()
 	local plot = getOwnedPlot()
 	if plot then
@@ -166,7 +165,6 @@ local function getBase()
 			or plot.PrimaryPart
 	end
 
-	-- Fallback: fixed path, in case this game doesn't use per-player Data/Owner
 	local fallback = workspace:FindFirstChild("Plots")
 		and workspace.Plots:FindFirstChild("Plot")
 		and workspace.Plots.Plot:FindFirstChild("Baseplate")
@@ -275,15 +273,12 @@ local function getBestEgg()
 	return bestEgg
 end
 
--- Pulls the KG number out of a pet tool's name, e.g. "Fox [1,711 KG]" -> 1711.
--- Returns nil for tools that aren't pets (eggs/food/gear don't have this format).
 local function getPetKGFromName(name)
 	local numStr = name:match("%[([%d,]+) KG%]")
 	if not numStr then return nil end
 	return tonumber((numStr:gsub(",", "")))
 end
 
--- First nest on the plot that isn't marked Occupied
 local function getUnoccupiedNest()
 	local plot = getOwnedPlot()
 	local nests = plot and plot:FindFirstChild("Nests")
@@ -294,6 +289,28 @@ local function getUnoccupiedNest()
 		end
 	end
 	return nil
+end
+
+local function setAutobuyItem(category, itemName, state)
+	GameRemotes:WaitForChild("Autobuy"):FireServer(category, itemName, state)
+end
+
+local function getMoneyStats()
+	local currencies = playerGui:FindFirstChild("Reusable") and playerGui.Reusable:FindFirstChild("Currencies")
+	if not currencies then return "N/A", "N/A" end
+	local cash = currencies:FindFirstChild("CashAmount")
+	local income = currencies:FindFirstChild("CashIncome")
+	return cash and cash.Text or "N/A", income and income.Text or "N/A"
+end
+
+local function countBackpackItem(itemName)
+	local backpack = player:FindFirstChild("Backpack")
+	if not backpack then return 0 end
+	local count = 0
+	for _, tool in ipairs(backpack:GetChildren()) do
+		if tool.Name == itemName then count += 1 end
+	end
+	return count
 end
 
 -------------------------------------------------
@@ -499,9 +516,6 @@ end
 -------------------------------------------------
 -- AUTO PLACE BEST PET LOOP
 -------------------------------------------------
--- NOTE: nest position lookup is a best-effort guess based on the plot dump
--- (Nests/<n>/Model). If pets land in the wrong spot, tell me and we'll
--- adjust getUnoccupiedNest() with more exact data.
 local function placeBestPet()
 	local backpack = player:FindFirstChild("Backpack")
 	if not backpack then return end
@@ -539,6 +553,61 @@ local function startAutoPlaceBestPet()
 			task.wait(3)
 		end
 		autoPlaceBestPetRunning = false
+	end)
+end
+
+-------------------------------------------------
+-- WEBHOOK
+-------------------------------------------------
+local function sendWebhook()
+	if Settings.WebhookURL == "" then return end
+
+	local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+	if not httpRequest then
+		warn("[RideAPet] No HTTP request function available in this executor - webhook can't send.")
+		return
+	end
+
+	local elapsed = math.floor(os.clock() - scriptStartTime)
+	local hours = math.floor(elapsed / 3600)
+	local mins = math.floor((elapsed % 3600) / 60)
+	local secs = elapsed % 60
+	local uptimeStr = string.format("%02d:%02d:%02d", hours, mins, secs)
+
+	local totalMoney, moneyPerSec = getMoneyStats()
+
+	local trackedLines = {}
+	for name, selected in pairs(Settings.TrackedBackpackItems) do
+		if selected then
+			table.insert(trackedLines, name .. ": " .. countBackpackItem(name))
+		end
+	end
+	local trackedText = #trackedLines > 0 and table.concat(trackedLines, "\n") or "None selected"
+
+	local payload = {
+		embeds = {
+			{
+				title = "Ride A Pet - Status Update",
+				color = 16750632,
+				fields = {
+					{ name = "Uptime", value = uptimeStr, inline = true },
+					{ name = "Total Money", value = tostring(totalMoney), inline = true },
+					{ name = "Money / sec", value = tostring(moneyPerSec), inline = true },
+					{ name = "Luck", value = "N/A", inline = true },
+					{ name = "Tracked Backpack Items", value = trackedText, inline = false },
+				},
+				timestamp = DateTime.now():ToIsoDate(),
+			}
+		}
+	}
+
+	pcall(function()
+		httpRequest({
+			Url = Settings.WebhookURL,
+			Method = "POST",
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = HttpService:JSONEncode(payload),
+		})
 	end)
 end
 
@@ -660,8 +729,6 @@ end)
 window:AddToggle(eggCard, "Auto Place Egg", Settings.AutoPlaceEgg, function(s)
 	Settings.AutoPlaceEgg = s
 	saveSettings()
-	-- NOTE: placement mechanic not yet confirmed (likely a physical drag/drop,
-	-- not a simple remote call) - toggle saves state but doesn't act yet.
 end)
 window:AddSlider(eggCard, "Minimum KG", 1000, 100000, Settings.MinEggKG, function(v)
 	Settings.MinEggKG = v
@@ -688,9 +755,22 @@ local buyCard = window:CreateCard(autoRight, "AUTO BUY", true)
 window:AddToggle(buyCard, "Enable Auto Buy", Settings.AutoBuy, function(s)
 	Settings.AutoBuy = s
 	saveSettings()
-	for _, item in ipairs(AutobuyItems) do
-		GameRemotes:WaitForChild("Autobuy"):FireServer(item[1], item[2], s)
+	for _, item in ipairs(FoodShopItems) do
+		setAutobuyItem("Food", item, s and foodShopSelected[item] == true)
 	end
+	for _, item in ipairs(TrackShopItems) do
+		setAutobuyItem("Gears", item, s and trackShopSelected[item] == true)
+	end
+end)
+window:AddMultiSelectDropdown(buyCard, "Food Shop", FoodShopItems, foodShopSelected, nil, function(name, state)
+	Settings.FoodShopSelected = foodShopSelected
+	saveSettings()
+	if Settings.AutoBuy then setAutobuyItem("Food", name, state) end
+end)
+window:AddMultiSelectDropdown(buyCard, "Track Shop", TrackShopItems, trackShopSelected, nil, function(name, state)
+	Settings.TrackShopSelected = trackShopSelected
+	saveSettings()
+	if Settings.AutoBuy then setAutobuyItem("Gears", name, state) end
 end)
 
 -------------------------------------------------
@@ -869,9 +949,12 @@ window:AddSlider(webhookCard, "Send Interval (minutes)", 5, 60, Settings.Webhook
 	Settings.WebhookInterval = v
 	saveSettings()
 end)
+window:AddMultiSelectDropdown(webhookCard, "Track Backpack Items", allEggNames, Settings.TrackedBackpackItems, nil, function(name, state)
+	saveSettings()
+end)
 
 -------------------------------------------------
--- AUTO REFRESH LOOP
+-- BACKGROUND LOOPS
 -------------------------------------------------
 task.spawn(function()
 	while task.wait(Settings.AutoRefreshInterval) do
@@ -881,7 +964,15 @@ task.spawn(function()
 	end
 end)
 
--- Resume any features that were left on from a previous session
+task.spawn(function()
+	while true do
+		task.wait(Settings.WebhookInterval * 60)
+		if Settings.WebhookEnabled then
+			sendWebhook()
+		end
+	end
+end)
+
 if autoFarmEnabled then startAutoFarm() end
 if Settings.AutoFeed then startAutoFeed() end
 if Settings.AutoHatch then startAutoHatch() end
